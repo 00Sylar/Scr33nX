@@ -10,6 +10,33 @@ grouped by date / milestone.
 
 ## [Unreleased]
 
+### Fixed
+- **Uploaded files no longer get stranded in the converted folder.** After a
+  successful upload the pipeline deletes the local `.mp4`, but Telegram can
+  hold the file open for a moment longer than it takes to report the send as
+  done — the delete then failed, and because the file was already recorded as
+  uploaded, the pipeline skipped it from then on. It sat in the converted
+  folder for ever while a one-line warning scrolled past. The delete is now
+  retried for about 15 seconds, which clears the race; if the file still can't
+  be removed it's moved into a **`stuck`** sub-folder of the converted
+  folder, so it's out of the pipeline's way and plainly visible instead of
+  silently piling up.
+
+### Changed
+- **Player tab: the Status ▾ / Rank ▾ filters now filter the open tiles too.**
+  Previously they only scoped what the **＋ Add Tile** picker offered, so
+  using them with tiles already open appeared to do nothing. They now work
+  like the Recorder/Saved filters: the Player shows only the tiles whose
+  live status and rank match — e.g. **Status: Online** leaves a wall of just
+  the models that are up right now — and the same filter still scopes the
+  picker, so anything you add matches what you're looking at. Hidden tiles
+  are only hidden, never closed: they keep streaming in the background and
+  reappear instantly when you clear the filter (nothing reloads). The tile
+  counter gains a "· N shown" suffix while a filter is active, ★ Fill Top
+  Ranked tells you if it added tiles the filter is hiding, and in Theater
+  mode a centred tile that gets filtered out hands off to the first visible
+  one instead of leaving a blank stage.
+
 ---
 
 ## V2.5 — 2026-08-25

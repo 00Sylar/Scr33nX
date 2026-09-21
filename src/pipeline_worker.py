@@ -371,13 +371,7 @@ class PipelineWorker:
                 await td.send_video(path, caption=caption, progress_cb=_cb)
                 self._ul_done += file_size
                 self._mark_uploaded(name)
-                try:
-                    os.remove(path)
-                except Exception as e:
-                    # Still marked uploaded (dedup by basename), so it won't
-                    # re-send — but tell the user the file lingers on disk.
-                    self.on_log(f"[upload #{slot}] ⚠ uploaded {name} but "
-                                f"couldn't delete it: {e}")
+                await self._discard_uploaded(slot, path, name)
                 uploaded.add(name)
                 attempts.pop(name, None)
                 self.on_progress(kind, "", 100.0, 0.0)   # empty name → "idle"
@@ -462,6 +456,35 @@ class PipelineWorker:
         self.on_progress("convert", label, 100.0)
 
     # ── Persistence helpers ──────────────────────────────────────────────────
+
+    async def _discard_uploaded(self, slot: int, path: str, name: str):
+        """Delete a file we just sent, retrying while TDLib still holds it.
+
+        TDLib releases the local file handle a moment *after* it reports the
+        send as succeeded, so an immediate os.remove() loses a race on Windows
+        and the .mp4 lingers for ever: it is already in uploaded.txt, so the
+        feeder skips it and the user only sees a growing folder. Retry with
+        backoff, and if it still will not go, move it out of the feeder's scan
+        path into `stuck/` so it is visible instead of silently orphaned.
+        """
+        last = None
+        for attempt in range(5):
+            try:
+                os.remove(path)
+                return
+            except Exception as e:
+                last = e
+                await asyncio.sleep(0.5 * (2 ** attempt))   # 0.5,1,2,4,8 s
+        stuck_dir = os.path.join(self.cfg.output_folder, "stuck")
+        try:
+            os.makedirs(stuck_dir, exist_ok=True)
+            os.replace(path, os.path.join(stuck_dir, name))
+            self.on_log(f"[upload #{slot}] ⚠ uploaded {name} but couldn't "
+                        f"delete it ({last}) — moved to stuck\\")
+        except Exception as e:
+            self.on_log(f"[upload #{slot}] ⚠ uploaded {name} but couldn't "
+                        f"delete ({last}) or move it ({e}) — it will stay "
+                        f"in the converted folder and be skipped.")
 
     def _load_uploaded(self) -> set:
         p = self.cfg.uploaded_log

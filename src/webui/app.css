@@ -581,6 +581,10 @@ input[type="range"]::-webkit-slider-thumb:hover { box-shadow: var(--shadow-sm), 
   background: var(--bg-2); border: 1px solid var(--line);
   border-radius: var(--r-md); box-shadow: var(--shadow-sm); overflow: hidden;
 }
+/* Hidden by the Player's Status/Rank filters — display:none only, so the
+   tile stays in the DOM and its <video> keeps streaming (removing it or
+   moving it would pause playback and force a reload when unfiltered). */
+.tile.is-filtered { display: none; }
 /* The video is styled exactly like the (known-working) preview overlay's
    #player-video: block, width-driven, own aspect-ratio, no object-fit —
    the previous cover-inside-aspect-wrapper setup played audio/decoded but

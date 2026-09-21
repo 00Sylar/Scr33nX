@@ -22,6 +22,11 @@ the tab:
   upload `.mp4`s you already have. As of V2.0, uploading no longer waits for
   an in‑progress conversion batch to finish — an uploader grabs a file the
   moment it's ready.
+  Each `.mp4` is deleted once it's safely on Telegram; if Windows still has
+  the file locked, the delete is retried for ~15 s and, failing that, the file
+  is moved to a **`stuck\`** sub‑folder of the converted folder so it stays
+  visible rather than lingering unnoticed (already-uploaded files are never
+  re-sent, so anything in `stuck\` is yours to delete or keep).
 
 **Stand‑by model:** the pipeline starts even with *no* stage checked — it
 sits in **● STAND BY** doing nothing. Ticking a stage takes effect

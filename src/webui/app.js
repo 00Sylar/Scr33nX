@@ -1331,10 +1331,12 @@ let playerActiveId = null;      // tileId centered in theater mode
 let playerTileSeq = 0;
 let playerTabLoaded = false;
 let playerPickerList = [];
-// Status/Rank filters for the "+ Add Tile" picker — same semantics as
-// statusFilter/rankFilter on the Recorder/Saved tabs, but scoped to this one
-// modal (reset each time it opens) rather than tab-persistent.
-const playerPickFilter = { status: new Set(), rank: 0 };
+// Status/Rank filters for the whole Player tab — same semantics as
+// statusFilter/rankFilter on the Recorder/Saved tabs. ONE state drives both
+// the open tiles (non-matching tiles are hidden, never closed) and the
+// "+ Add Tile" picker list, so what you filter is what you see and what you
+// can add. Tab-persistent: it survives closing/reopening the picker.
+const playerFilter = { status: new Set(), rank: 0 };
 let playerPending = new Set();       // tileIds with an in-flight preview_embedded() call
 let playerCooldownUntil = new Map(); // tileId -> ms timestamp; skip auto-retry until then
 let playerTileErr = new Map();       // tileId -> short error text shown on the tile
@@ -1437,11 +1439,69 @@ function ensureTileEl(t) {
   return el;
 }
 
+// Text of #player-empty in index.html — restored whenever the Player is
+// genuinely empty (the same element doubles as the "filtered out" notice).
+const PLAYER_EMPTY_TXT = $("player-empty") ? $("player-empty").textContent : "";
+
+function playerFilterActive() {
+  return playerFilter.status.size > 0 || playerFilter.rank !== 0;
+}
+
+// Does this tile pass the toolbar Status/Rank filters? Rank comes from
+// rankInfoFor (S.models alone misses tiles added from Saved Models).
+// `sticky` is used by the per-tick pass: "checking" is a transient poll
+// state, so a tile mid-check keeps whatever visibility it already had
+// instead of blinking out and back every cycle.
+function tileMatchesFilter(t, opts) {
+  const sf = playerFilter.status, rf = playerFilter.rank;
+  const st = statusOfTile(t);
+  if (st === "checking" && sf.size && !sf.has("checking") && opts && opts.sticky) {
+    const prev = playerTileEls.get(t.id);
+    if (prev) return !prev.classList.contains("is-filtered");
+  }
+  return (sf.size === 0 || sf.has(st))
+    && rankMatch(rankInfoFor(t.name, t.site).rank, rf);
+}
+
+// Hide/show open tiles to match the filters and refresh the count + empty
+// state. Hidden tiles are only display:none — they stay in the DOM and KEEP
+// streaming, so clearing the filter brings them back instantly with no
+// reload (removing or re-parenting them would pause their <video>).
+// Returns the list of tiles currently visible.
+function applyPlayerTileFilter(opts) {
+  if (!$("player-stage")) return [];
+  const vis = [];
+  for (const t of playerTiles) {
+    const ok = tileMatchesFilter(t, opts);
+    const el = playerTileEls.get(t.id);
+    if (el) {
+      const was = el.classList.contains("is-filtered");
+      el.classList.toggle("is-filtered", !ok);
+      // A tile un-hidden by this pass alone (e.g. its rank changed while a
+      // Rank filter hid it) never goes through reattachPlayerPlayback, and
+      // display:none can leave its <video> paused — nudge it. play() on an
+      // already-playing element is a no-op.
+      if (was && ok && playerHls.has(t.id)) {
+        const v = el.querySelector(".tile-video");
+        if (v) v.play().catch(() => {});
+      }
+    }
+    if (ok) vis.push(t);
+  }
+  const act = playerFilterActive();
+  $("player-count").textContent = `${playerTiles.length} / ${playerMaxTiles} tiles`
+    + (act ? ` · ${vis.length} shown` : "");
+  const empty = $("player-empty");
+  empty.textContent = playerTiles.length === 0
+    ? PLAYER_EMPTY_TXT
+    : "No open tiles match the Status / Rank filters. Tiles are only hidden — clear the filters to bring them back.";
+  empty.hidden = vis.length > 0;
+  $("player-stage").hidden = vis.length === 0;
+  return vis;
+}
+
 function renderPlayerTab() {
   if (!$("player-stage")) return;
-  $("player-count").textContent = `${playerTiles.length} / ${playerMaxTiles} tiles`;
-  $("player-empty").hidden = playerTiles.length > 0;
-  $("player-stage").hidden = playerTiles.length === 0;
   // Reconcile, don't rebuild: each tile has ONE persistent element that is
   // moved into the right container. A tile can only exist in one place, so
   // there are never stale duplicates, and moving keeps videos playing.
@@ -1461,7 +1521,10 @@ function renderPlayerTab() {
   } else {
     $("player-grid").hidden = true;
     $("player-theater").hidden = false;
-    const active = findPlayerTile(playerActiveId) || playerTiles[0] || null;
+    // Never centre a tile the filters hide — promote the first visible one.
+    const cur = findPlayerTile(playerActiveId);
+    const active = (cur && tileMatchesFilter(cur) ? cur : null)
+      || playerTiles.find(t => tileMatchesFilter(t)) || playerTiles[0] || null;
     playerActiveId = active ? active.id : null;
     if (active) $("theater-active").appendChild(ensureTileEl(active));
     for (const t of playerTiles) {
@@ -1473,6 +1536,7 @@ function renderPlayerTab() {
     const v = el.querySelector(".tile-video");
     if (v) v.controls = (playerLayout === "theater" && id === playerActiveId);
   }
+  applyPlayerTileFilter();
   reattachPlayerPlayback();
 }
 
@@ -1553,6 +1617,16 @@ function patchPlayerStatuses() {
     // stream continuously so returning to the Player never reloads them.
     if (live && !playerHls.has(t.id)) playTile(t.id, { silent: true });
     else if (!live && playerHls.has(t.id)) stopTilePlayback(t.id);
+  }
+  // Statuses just moved — re-apply the toolbar filters so tiles appear and
+  // disappear as models go online/offline (visibility only; nothing is
+  // closed and nothing stops streaming).
+  const vis = applyPlayerTileFilter({ sticky: true });
+  // Structural work only when the centred theater tile itself got hidden.
+  if (playerLayout === "theater" && vis.length
+      && !vis.some(t => t.id === playerActiveId)) {
+    playerActiveId = vis[0].id;
+    renderPlayerTab();
   }
 }
 
@@ -1674,9 +1748,12 @@ function addPlayerTile(name, site) {
   const r = _pushPlayerTile(name, site);
   if (r === "dup") { toast("That model already has an open tile.", true); return false; }
   if (r === "cap") { toast(PLAYER_CAP_MSG, true); return false; }
+  const t = playerTiles[playerTiles.length - 1];
   renderPlayerTab();
-  toast(`▶ Added ${name} to the Player tab.`);
-  playTile(playerTiles[playerTiles.length - 1].id);
+  toast(playerFilterActive() && !tileMatchesFilter(t)
+    ? `▶ Added ${name} — hidden by the Player's Status/Rank filters.`
+    : `▶ Added ${name} to the Player tab.`);
+  playTile(t.id);
   return true;
 }
 function addPlayerTilesBulk(items) {
@@ -1689,7 +1766,10 @@ function addPlayerTilesBulk(items) {
   }
   if (added) {
     renderPlayerTab();
-    toast(`▶ Added ${added} model(s) to the Player tab.`);
+    const hidden = playerFilterActive()
+      ? newIds.filter(id => !tileMatchesFilter(findPlayerTile(id))).length : 0;
+    toast(`▶ Added ${added} model(s) to the Player tab.`
+      + (hidden ? ` (${hidden} hidden by the Status/Rank filters.)` : ""));
     for (const id of newIds) playTile(id);
   }
   if (cap) toast(PLAYER_CAP_MSG, true);
@@ -1833,16 +1913,16 @@ $("player-add").addEventListener("click", openPlayerPicker);
 $("playerpick-cancel").addEventListener("click", () => { $("playerpick").hidden = true; });
 function applyPlayerPickFilters() {
   const f = $("playerpick-filter").value.trim().toLowerCase();
-  const sf = playerPickFilter.status;
-  const rf = playerPickFilter.rank;
+  const sf = playerFilter.status;
+  const rf = playerFilter.rank;
   renderPlayerPickerList(playerPickerList.filter(it =>
     (!f || it.name.toLowerCase().includes(f))
     && (!sf.size || sf.has(it.status))
     && rankMatch(it.rank, rf)));
 }
 $("playerpick-filter").addEventListener("input", applyPlayerPickFilters);
-function updatePlayerPickLabels() {
-  const sf = playerPickFilter.status, rf = playerPickFilter.rank;
+function updatePlayerFilterLabels() {
+  const sf = playerFilter.status, rf = playerFilter.rank;
   const sBtn = $("player-msf").querySelector(".msf-btn");
   sBtn.classList.toggle("active", sf.size > 0);
   sBtn.textContent = (sf.size === 0 ? "Status: All"
@@ -1872,11 +1952,12 @@ $("player-msf").querySelector(".msf-menu").addEventListener("click", (e) => {
   const lab = e.target.closest("label[data-v]");
   if (!lab) return;
   const v = lab.dataset.v;
-  if (v === "__clear") playerPickFilter.status.clear();
-  else if (playerPickFilter.status.has(v)) playerPickFilter.status.delete(v);
-  else playerPickFilter.status.add(v);
-  updatePlayerPickLabels();
+  if (v === "__clear") playerFilter.status.clear();
+  else if (playerFilter.status.has(v)) playerFilter.status.delete(v);
+  else playerFilter.status.add(v);
+  updatePlayerFilterLabels();
   applyPlayerPickFilters();
+  renderPlayerTab();
 });
 $("player-rankf").querySelector(".msf-btn").addEventListener("click", (e) => {
   e.stopPropagation();
@@ -1890,9 +1971,10 @@ $("player-rankf").querySelector(".msf-menu").addEventListener("click", (e) => {
   const lab = e.target.closest("label[data-v]");
   if (!lab) return;
   const v = lab.dataset.v === "__clear" ? 0 : Number(lab.dataset.v);
-  playerPickFilter.rank = (playerPickFilter.rank === v) ? 0 : v;
-  updatePlayerPickLabels();
+  playerFilter.rank = (playerFilter.rank === v) ? 0 : v;
+  updatePlayerFilterLabels();
   applyPlayerPickFilters();
+  renderPlayerTab();
 });
 $("playerpick-list").addEventListener("click", (e) => {
   const row = e.target.closest("[data-pp-name]");
