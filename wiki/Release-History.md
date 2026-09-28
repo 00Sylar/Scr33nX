@@ -6,6 +6,38 @@ in the repository, and each version is also a
 
 ---
 
+## V2.6 — 2026‑09‑28
+
+**Chaturbate is back, and faster.** Around 2026‑09‑23 Chaturbate's video
+servers started refusing IPv6 connections, which broke every Chaturbate
+stream on most home connections. V2.6 fixes that and removes the old
+one-request-at-a-time throttle that made Chaturbate the slowest site to load.
+
+**Fixed**
+- **Chaturbate recording and Player tiles work again.** Scr33nX now connects
+  to Chaturbate over IPv4. Before, models resolved but every playlist was
+  refused (`manifestLoadError`, nothing recorded).
+- **Uploaded files no longer get stranded in the converted folder.** The
+  post-upload delete is retried for about 15 s. If it still fails, the file is
+  moved to a **`stuck\`** sub-folder instead of being silently skipped
+  forever.
+
+**Changed**
+- **Chaturbate is much faster.**
+  - A 16-tile Player wall resolves in ~1 s (was ~24 s).
+  - A full saved-models scan takes ~18 s (was ~2.5 min).
+  - With 45 or fewer saved Chaturbate models, each one is checked directly,
+    so their tiles open instantly.
+  - If Chaturbate rate-limits, Scr33nX backs off automatically and keeps each
+    model's last status instead of flipping her OFFLINE.
+  - Retrying a tile, or opening one for a model that's already recording, no
+    longer fails.
+- **Player Status ▾ / Rank ▾ filters now filter the open tiles**, not just
+  the ＋ Add Tile picker. Hidden tiles keep streaming and reappear instantly
+  when the filter is cleared.
+
+---
+
 ## V2.3 — 2026‑07‑25
 
 **Cross-site recording warnings, now in the app itself.** V2.2 taught the

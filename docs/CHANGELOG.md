@@ -12,6 +12,62 @@ grouped by date / milestone.
 
 ---
 
+## V2.6 — 2026-09-28
+
+**Chaturbate works again, and it's much faster: Player, saved scan and
+status checks.** Also: the Player's filters now apply to open tiles, and a
+fix for uploads stranded in the converted folder.
+
+### Fixed
+- **Chaturbate works again: recording and Player tiles.** Since about
+  2026-09-23, Chaturbate's video servers refuse connections made over IPv6.
+  On a normal dual-stack home connection, every Chaturbate stream failed:
+  the model resolved, then the playlist was refused (Player tiles showed
+  `manifestLoadError` and nothing recorded). Scr33nX now connects to
+  Chaturbate over IPv4. Other sites are unchanged.
+- **Uploaded files no longer get stranded in the converted folder.** After a
+  successful upload the pipeline deletes the local `.mp4`, but Telegram can
+  hold the file open for a moment longer than it takes to report the send as
+  done — the delete then failed, and because the file was already recorded as
+  uploaded, the pipeline skipped it from then on. It sat in the converted
+  folder for ever while a one-line warning scrolled past. The delete is now
+  retried for about 15 seconds, which clears the race; if the file still can't
+  be removed it's moved into a **`stuck\`** sub-folder of the converted
+  folder, so it's out of the pipeline's way and plainly visible instead of
+  silently piling up.
+
+### Changed
+- **Chaturbate is much faster: Player, saved-models scan, and status checks.**
+  Scr33nX used to send Chaturbate requests one at a time, at least 1.5 s
+  apart. A Player wall of 16 Chaturbate tiles took ~24 s to start, and a
+  saved-models scan took ~2.5 minutes, blocking everything else behind it.
+  Requests are now paced adaptively and run in parallel:
+  - The 16-tile wall resolves in about a second.
+  - A full saved scan takes ~18 s.
+  - With 45 or fewer saved Chaturbate models, the scan checks them directly,
+    so their Player tiles open instantly.
+  - If Chaturbate starts rate-limiting, Scr33nX slows itself down
+    automatically and keeps each model's last known status instead of
+    wrongly showing her OFFLINE.
+  - Retrying a Chaturbate tile, or opening one for a model that's already
+    recording, no longer fails with `manifestLoadError`. Chaturbate's stream
+    links only work once, so the relay now reuses the first playlist it got.
+- **Player tab: the Status ▾ / Rank ▾ filters now filter the open tiles too.**
+  Previously they only scoped what the **＋ Add Tile** picker offered, so
+  using them with tiles already open appeared to do nothing. They now work
+  like the Recorder/Saved filters: the Player shows only the tiles whose
+  live status and rank match — e.g. **Status: Online** leaves a wall of just
+  the models that are up right now — and the same filter still scopes the
+  picker, so anything you add matches what you're looking at. Hidden tiles
+  are only hidden, never closed: they keep streaming in the background and
+  reappear instantly when you clear the filter (nothing reloads). The tile
+  counter gains a "· N shown" suffix while a filter is active, ★ Fill Top
+  Ranked tells you if it added tiles the filter is hiding, and in Theater
+  mode a centred tile that gets filtered out hands off to the first visible
+  one instead of leaving a blank stage.
+
+---
+
 ## V2.5 — 2026-08-25
 
 **Faster ways to find and manage models in the Player and Saved Models tabs.**
