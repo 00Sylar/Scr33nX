@@ -38,6 +38,49 @@ one-request-at-a-time throttle that made Chaturbate the slowest site to load.
 
 ---
 
+## V2.5 — 2026‑08‑25
+
+**Faster ways to find and manage models in the Player and Saved Models tabs.**
+
+**Added**
+- **"Hide cross-site recording" filter (Saved Models tab)** — a checkbox at
+  the bottom of the Status ▾ dropdown hides any model whose linked (🔗)
+  identity is already recording on another site. Combine it with
+  **Status: Online** to see only models that are up and not already being
+  captured under another account.
+- **Status ▾ / Rank ▾ filters for the Player's ＋ Add Tile picker** — they
+  sit in the Player toolbar, left of ★ Fill Top Ranked, and narrow the picker
+  to, say, ★4+ online models only. They persist until cleared, like the
+  Recorder/Saved filters. *(Since V2.6 they also filter the open tiles.)*
+- **Right-click menu on Player tiles** — the same menu as the model's
+  Recorder/Saved row (start/stop recording, rank, links, VIP, copy URL, open
+  in browser), plus a Player-only **✕ Close Tile** that removes just the
+  tile.
+
+---
+
+## V2.4 — 2026‑08‑25
+
+**Stripchat is back.** Partway through V2.3, Stripchat changed its API. That
+broke the Player, Preview and recording for every Stripchat model, while
+status still showed online. This release fixes that and speeds up opening
+Chaturbate models in the Player.
+
+**Fixed**
+- **Stripchat models record and preview again.** Stripchat's bot filter
+  started answering the stream-id lookup with HTTP 418. The id now comes from
+  the model page, so the lightweight browserless path works again instead of
+  dropping to the slower Playwright fallback (or not recording at all).
+- **Stripchat online checks** now point at the master playlist that actually
+  serves. The old URL had started returning 404.
+
+**Changed**
+- **Faster Player opens for Chaturbate and Stripchat.** A tile reuses the
+  stream URL the online check already fetched (up to 30 s old) instead of
+  resolving it again. Online/offline detection is unchanged.
+
+---
+
 ## V2.3 — 2026‑07‑25
 
 **Cross-site recording warnings, now in the app itself.** V2.2 taught the
