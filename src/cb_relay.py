@@ -47,6 +47,32 @@ _session.mount("https://", _adapter)
 _session.mount("http://", _adapter)
 
 
+class IPv4Adapter(requests.adapters.HTTPAdapter):
+    """HTTPAdapter that only connects over IPv4. Binding the source address
+    to 0.0.0.0 makes every IPv6 candidate from getaddrinfo fail locally, so
+    urllib3 falls through to the host's A record.
+
+    Chaturbate's mmcdn edges answer 403 to IPv6 clients (since ~2026-09-23),
+    and its stream tokens are minted for the IP that called the API — so on
+    a dual-stack connection both the API and the edge must go out over IPv4."""
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["source_address"] = ("0.0.0.0", 0)
+        super().init_poolmanager(*args, **kwargs)
+
+
+# Chaturbate traffic gets its own IPv4-only session (see IPv4Adapter); the
+# other sites keep the default dual-stack one.
+_cb_session = requests.Session()
+_cb_adapter = IPv4Adapter(pool_connections=32, pool_maxsize=128)
+_cb_session.mount("https://", _cb_adapter)
+_cb_session.mount("http://", _cb_adapter)
+
+
+def _session_for(mode: str) -> requests.Session:
+    return _cb_session if mode == "chaturbate" else _session
+
+
 # ── Bandwidth accounting ──────────────────────────────────────────────────────
 # Every byte fetched upstream is counted here; the app polls bytes_downloaded()
 # to drive the bandwidth meter.
@@ -273,7 +299,7 @@ def _fetch(url: str, mode: str = "chaturbate", tries: int = 3,
     last_exc = None
     for _ in range(tries):
         try:
-            return _session.get(url, timeout=timeout, headers=headers)
+            return _session_for(mode).get(url, timeout=timeout, headers=headers)
         except requests.RequestException as exc:
             last_exc = exc
     raise last_exc
@@ -392,6 +418,36 @@ def _rewrite_playlist(text: str, base_url: str, mode: str = "chaturbate",
     return "\n".join(out) + "\n"
 
 
+# Chaturbate master playlists, keyed by upstream URL. The token= in a CB
+# master URL is effectively single-use: fetching the same master again within
+# ~40 s is 403. So a Player tile retry, or a tile opened on a URL a recording
+# already used, would fail. The master only lists variant/audio playlists
+# carrying a ?session=. That session stays valid while something polls it
+# (measured: a tile polling alongside ffmpeg got only 200s), but it expires
+# once idle. So a copy younger than _MASTER_FRESH is replayed as is. An older
+# one is used only as a fallback when a fresh fetch of the master is refused.
+_MASTER_FRESH = 30.0
+_MASTER_TTL = 300.0
+_masters: dict[str, tuple[float, str]] = {}
+_masters_lock = threading.Lock()
+
+
+def _master_cached(url: str, max_age: float = _MASTER_FRESH) -> str | None:
+    with _masters_lock:
+        hit = _masters.get(url)
+        if hit and time.monotonic() - hit[0] < max_age:
+            return hit[1]
+    return None
+
+
+def _master_store(url: str, text: str):
+    now = time.monotonic()
+    with _masters_lock:
+        _masters[url] = (now, text)
+        for k in [k for k, (t, _) in _masters.items() if now - t >= _MASTER_TTL]:
+            del _masters[k]
+
+
 class _QuietServer(ThreadingHTTPServer):
     daemon_threads = True
     # Default listen backlog is 5; with dozens of ffmpeg processes opening
@@ -438,13 +494,27 @@ class _Handler(BaseHTTPRequestHandler):
             self._proxy_stream(target, mode)
             return
 
-        try:
-            r = _fetch(target, mode)
-        except Exception:
-            self.send_error(502)
-            return
-        _count(len(r.content))
-        text = r.content.decode("utf-8", "replace")
+        text = _master_cached(target) if mode == "chaturbate" else None
+        if text is not None:
+            status = 200
+        else:
+            try:
+                r = _fetch(target, mode)
+            except Exception:
+                self.send_error(502)
+                return
+            _count(len(r.content))
+            status = r.status_code
+            text = r.content.decode("utf-8", "replace")
+            if mode == "chaturbate":
+                if status == 200 and "#EXT-X-STREAM-INF" in text:
+                    _master_store(target, text)
+                elif status == 403:
+                    # Token already spent — replay an older copy; its session
+                    # is still good if a recording keeps it polled.
+                    old = _master_cached(target, _MASTER_TTL)
+                    if old is not None:
+                        status, text = 200, old
         # Same advert markers stripchat_native.resolve() rejects at start;
         # mid-recording the CDN swaps a live playlist for this loop when the
         # model goes offline. 404 so ffmpeg stops instead of recording ads.
@@ -457,7 +527,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         body = _rewrite_playlist(text, target, mode, label).encode("utf-8")
-        self._send(r.status_code, "application/vnd.apple.mpegurl", body)
+        self._send(status, "application/vnd.apple.mpegurl", body)
 
     def _send(self, status: int, ctype: str, body: bytes):
         try:
@@ -476,7 +546,7 @@ class _Handler(BaseHTTPRequestHandler):
         """Cache miss: forward the segment, streaming chunks to ffmpeg as they
         arrive instead of buffering the whole segment first."""
         try:
-            r = _session.get(target, timeout=20, headers=_headers(mode),
+            r = _session_for(mode).get(target, timeout=20, headers=_headers(mode),
                              stream=True)
         except requests.RequestException:
             self.send_error(502)

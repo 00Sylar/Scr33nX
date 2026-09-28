@@ -35,6 +35,14 @@ HEADERS = {
 # Shared session for connection pooling — reduces socket churn under many models
 _http = requests.Session()
 _http.headers.update(HEADERS)
+# Chaturbate stream tokens are bound to the IP that called its API, and the
+# mmcdn edges refuse IPv6 — so CB API calls must go out over IPv4 to match
+# the relay's IPv4-only edge fetches (cb_relay.IPv4Adapter).
+from cb_relay import IPv4Adapter as _IPv4Adapter
+# Sized for a Player wall resolving at once alongside monitor checks and
+# room-list sweep workers, so none of them waits on a pooled connection.
+_http.mount("https://chaturbate.com",
+            _IPv4Adapter(pool_connections=4, pool_maxsize=48))
 
 
 class ModelStatus(Enum):
@@ -95,24 +103,82 @@ class ModelConfig:
 # ── Chaturbate ────────────────────────────────────────────────────────────────
 
 _CB_OFFLINE_STATUSES   = {"offline", "away", "private", "hidden", ""}
-_CB_API_LOCK           = threading.Lock()  # serialise all CB API calls
-_CB_LAST_API_CALL: float = 0.0             # timestamp of last CB HTTP request
-_CB_MIN_CALL_INTERVAL  = 1.5              # seconds between consecutive CB requests
+
+# Adaptive request pacing for chaturbate.com. Background requests (monitor
+# checks, saved-scan lookups, room-list pages) each reserve the next slot
+# _cb_interval apart, but many can be in flight at once. A throttle signal
+# (429/403/503, empty or non-JSON body) doubles the spacing up to
+# _CB_MAX_INTERVAL. Each clean response eases it back toward the base.
+# Interactive requests (opening the Player, a manual REC) skip the queue
+# unless the limiter is currently backing off.
+#
+# This replaced a strict one-at-a-time 1.5 s gate. Measured 2026-09-28: 40
+# room-list pages on 8 threads and 60 chatvideocontext calls on 8 threads
+# came back all 200. The old gate made a room-list sweep take ~2.5 min and
+# a 16-tile Player wall take ~24 s to resolve.
+_CB_BASE_INTERVAL = 0.2
+_CB_MAX_INTERVAL  = 4.0
+_CB_PACE_LOCK     = threading.Lock()
+_cb_interval      = _CB_BASE_INTERVAL
+_cb_next_slot     = 0.0
+_CB_INTERACTIVE_SLOTS = threading.BoundedSemaphore(8)
+
+
+def _cb_wait(interactive: bool = False):
+    global _cb_next_slot
+    with _CB_PACE_LOCK:
+        if interactive and _cb_interval <= _CB_BASE_INTERVAL:
+            return
+        now = time.time()
+        slot = max(now, _cb_next_slot)
+        _cb_next_slot = slot + _cb_interval
+    if slot > now:
+        time.sleep(slot - now)
+
+
+def _cb_get(url: str, interactive: bool = False, **kwargs) -> requests.Response:
+    """GET a chaturbate.com API URL through the pacer, feeding the response
+    back into it. Returns the response; callers decide what it means."""
+    global _cb_interval
+    _cb_wait(interactive)
+    if interactive and _cb_interval <= _CB_BASE_INTERVAL:
+        # Cap a Player wall's burst at the concurrency measured safe.
+        with _CB_INTERACTIVE_SLOTS:
+            r = _http.get(url, **kwargs)
+    else:
+        r = _http.get(url, **kwargs)
+    is_json = "json" in r.headers.get("Content-Type", "")
+    # A JSON 403 is a per-room refusal, not Cloudflare — don't slow every
+    # other request down for it (the lookup still reads as unknown).
+    throttled = (r.status_code in (429, 503) or not r.content
+                 or (r.status_code in (200, 403) and not is_json))
+    with _CB_PACE_LOCK:
+        if throttled:
+            new = min(_CB_MAX_INTERVAL, _cb_interval * 2)
+            if new != _cb_interval:
+                logger.warning(f"[CB] throttled (HTTP {r.status_code}) — "
+                               f"request spacing now {new:.1f}s")
+            _cb_interval = new
+        elif _cb_interval > _CB_BASE_INTERVAL:
+            _cb_interval = max(_CB_BASE_INTERVAL, _cb_interval * 0.9)
+    return r
+
 
 # Resolved-URL cache, same contract as stripchat_native.page_info(): every
 # success is stored, but it is only read when the caller passes a max_age it
-# will accept. Liveness checks pass 0 and always go to the network.
-#
-# This matters more for Chaturbate than for the other sites: _CB_API_LOCK
-# serialises *every* CB request behind a 1.5 s gap, and the saved-models
-# room-list sweep holds that gate for ~2.5 minutes at a stretch. A resolve
-# that would take ~0.6 s idle measures ~3.0 s while a sweep is running, because
-# the lock isn't FIFO and an interactive request keeps losing the race. Opening
-# the Player can skip the queue entirely by reusing the URL the monitor's own
-# check just stored — no extra requests to Chaturbate, strictly fewer.
+# will accept. Liveness checks pass 0 and always go to the network. Opening
+# the Player reuses the URL the monitor or saved scan just stored, so a tile
+# starts without its own API round-trip. The token in a CB URL is
+# effectively single-use (a second master fetch within ~40 s is 403). The
+# relay caches each CB master playlist, so a reused URL is still served.
 _CB_URL_CACHE: dict[str, tuple[float, str]] = {}
 _CB_URL_LOCK = threading.Lock()
 _CB_URL_CACHE_MAX = 512  # prune oldest entries past this, so a long run can't grow forever
+
+# Names whose most recent lookup couldn't tell online from offline
+# (throttled, network error, garbled reply). The monitor keeps the previous
+# status for these instead of flipping them OFFLINE.
+_CB_UNKNOWN: set[str] = set()
 
 # How stale a cached URL the Player / Preview will accept. Those actions are
 # already gated on a status the monitor refreshed at most one check_interval
@@ -121,82 +187,102 @@ _CB_URL_CACHE_MAX = 512  # prune oldest entries past this, so a long run can't g
 PREVIEW_URL_MAX_AGE = 30.0
 
 
-def _fetch_chaturbate_once(model_name: str) -> tuple[Optional[str], str]:
+def _fetch_chaturbate_once(model_name: str,
+                           interactive: bool = False) -> tuple[Optional[str], str]:
     """Single attempt. Returns (hls_url_or_None, room_status).
-    room_status == 'rate_limited' means Cloudflare returned an empty/blocked response.
-    """
-    global _CB_LAST_API_CALL
-    # Serialise all CB API calls — 1.5 s minimum gap prevents concurrent hammering
-    with _CB_API_LOCK:
-        wait = _CB_MIN_CALL_INTERVAL - (time.time() - _CB_LAST_API_CALL)
-        if wait > 0:
-            time.sleep(wait)
-        _CB_LAST_API_CALL = time.time()
-
-    r = _http.get(
-        f"https://chaturbate.com/api/chatvideocontext/{model_name}/",
-        timeout=12,
-    )
+    room_status == 'unknown' means the answer couldn't be read (throttled,
+    network error, non-JSON reply) — neither online nor offline."""
+    try:
+        r = _cb_get(f"https://chaturbate.com/api/chatvideocontext/{model_name}/",
+                    interactive=interactive, timeout=12)
+    except requests.RequestException as e:
+        logger.debug(f"[CB] {model_name}: {e}")
+        return None, "unknown"
     if r.status_code == 404:
         return None, "offline"
-    if not r.content or r.status_code in (429, 403, 503):
-        return None, "rate_limited"
-    data = r.json()
+    if r.status_code != 200:
+        return None, "unknown"
+    try:
+        data = r.json()
+    except ValueError:
+        return None, "unknown"
     hls = data.get("hls_source") or data.get("stream_url") or ""
     room = data.get("room_status") or ""
     return (hls.strip() or None), room.strip()
 
 
+def chaturbate_lookup(model_name: str, max_retries: int = 1, max_age: float = 0.0,
+                      interactive: bool = False) -> tuple[Optional[str], Optional[bool]]:
+    """(hls_url, live) for a Chaturbate model; live is None when the answer
+    was unreadable. See get_chaturbate_stream_url() for the parameters."""
+    key = model_name.lower()
+    if max_age > 0:
+        with _CB_URL_LOCK:
+            hit = _CB_URL_CACHE.get(key)
+            if hit and time.time() - hit[0] < max_age:
+                return hit[1], True
+    room = ""
+    for attempt in range(max_retries + 1):
+        hls, room = _fetch_chaturbate_once(model_name, interactive)
+        if hls:
+            if attempt:
+                logger.debug(f"[CB] {model_name}: got URL on attempt {attempt + 1}")
+            with _CB_URL_LOCK:
+                _CB_URL_CACHE[key] = (time.time(), hls)
+                if len(_CB_URL_CACHE) > _CB_URL_CACHE_MAX:
+                    for k in sorted(_CB_URL_CACHE,
+                                    key=lambda k: _CB_URL_CACHE[k][0]
+                                    )[:_CB_URL_CACHE_MAX // 4]:
+                        del _CB_URL_CACHE[k]
+            return hls, True
+        if room == "unknown":
+            logger.debug(f"[CB] {model_name}: status unreadable (throttled?)")
+            return None, None
+        if room in _CB_OFFLINE_STATUSES:
+            return None, False
+        if attempt < max_retries:
+            # room=public but no URL — CDN warmup, retry is valid
+            logger.debug(f"[CB] {model_name}: room={room!r} no URL yet — retry {attempt + 1}/{max_retries} in 2 s")
+            time.sleep(2)
+    logger.debug(f"[CB] {model_name}: exhausted retries (room={room!r})")
+    return None, False
+
+
 def get_chaturbate_stream_url(model_name: str, max_retries: int = 1,
-                              max_age: float = 0.0) -> Optional[str]:
+                              max_age: float = 0.0,
+                              interactive: bool = False) -> Optional[str]:
     """
     Fetch the HLS stream URL for a Chaturbate model.
 
     max_retries controls CDN-warmup retries (room=public but no URL yet):
       1  — monitor path: fast, move on if not ready
       4  — manual REC path: persistent, gives CDN time to serve the URL
-    Rate-limit responses (empty body / 429) bail immediately without retrying.
+    An unreadable answer (throttled, network error) bails without retrying
+    and marks the name in _CB_UNKNOWN (see chaturbate_status_unknown()).
 
     max_age is the oldest cached URL the caller will accept, in seconds — 0
     (the default) always goes to the network. See _CB_URL_CACHE.
+    interactive skips the pacing queue (see _cb_wait()).
     """
     key = model_name.lower()
-    if max_age > 0:
-        with _CB_URL_LOCK:
-            hit = _CB_URL_CACHE.get(key)
-            if hit and time.time() - hit[0] < max_age:
-                return hit[1]
     try:
-        room = ""
-        for attempt in range(max_retries + 1):
-            hls, room = _fetch_chaturbate_once(model_name)
-            if hls:
-                if attempt:
-                    logger.debug(f"[CB] {model_name}: got URL on attempt {attempt + 1}")
-                with _CB_URL_LOCK:
-                    _CB_URL_CACHE[key] = (time.time(), hls)
-                    if len(_CB_URL_CACHE) > _CB_URL_CACHE_MAX:
-                        for k in sorted(_CB_URL_CACHE,
-                                        key=lambda k: _CB_URL_CACHE[k][0]
-                                        )[:_CB_URL_CACHE_MAX // 4]:
-                            del _CB_URL_CACHE[k]
-                return hls
-            if room == "rate_limited":
-                # Silent fallback — old-version monitor treated this as offline.
-                logger.debug(f"[CB] {model_name}: rate-limited by Cloudflare")
-                return None
-            if room in _CB_OFFLINE_STATUSES:
-                return None
-            if attempt < max_retries:
-                # room=public but no URL — CDN warmup, retry is valid
-                logger.debug(f"[CB] {model_name}: room={room!r} no URL yet — retry {attempt + 1}/{max_retries} in 2 s")
-                time.sleep(2)
-
-        logger.debug(f"[CB] {model_name}: exhausted retries (room={room!r})")
-        return None
+        hls, live = chaturbate_lookup(model_name, max_retries, max_age, interactive)
     except Exception as e:
         logger.error(f"[CB] {model_name}: {e}")
-        return None
+        hls, live = None, None
+    with _CB_URL_LOCK:
+        if live is None:
+            _CB_UNKNOWN.add(key)
+        else:
+            _CB_UNKNOWN.discard(key)
+    return hls
+
+
+def chaturbate_status_unknown(model_name: str) -> bool:
+    """True if the most recent lookup for this model couldn't tell whether
+    she's online — the caller should keep the previous status."""
+    with _CB_URL_LOCK:
+        return model_name.lower() in _CB_UNKNOWN
 
 
 # ── Stripchat ─────────────────────────────────────────────────────────────────
@@ -254,56 +340,77 @@ def get_camsoda_stream_url(model_name: str) -> Optional[str]:
         return None
 
 
+_CB_ROOMLIST_URL  = "https://chaturbate.com/api/ts/roomlist/room-list/"
+_CB_ROOMLIST_PAGE = 90   # the API rejects limit > 90 with HTTP 400
+
+
 def get_chaturbate_online_rooms(should_continue: Optional[Callable[[], bool]] = None,
-                                on_progress: Optional[Callable[[int, int], None]] = None) -> Optional[set]:
+                                on_progress: Optional[Callable[[int, int], None]] = None,
+                                workers: int = 4) -> Optional[set]:
     """
     Fetch usernames of ALL publicly online Chaturbate rooms via the paginated
-    room-list API (max 90 rooms/page, ~100 pages for the whole site). One full
-    sweep covers any number of saved models in ~2.5 min at the 1.5 s cadence —
-    vs one request per model, which Cloudflare rate-limits into false OFFLINEs.
+    room-list API (90 rooms/page, ~90 pages for the whole site). Page 0 gives
+    the total. The remaining pages are fetched on `workers` threads through
+    the pacer, so a full sweep takes ~20 s.
 
     on_progress(rooms_fetched, total_rooms) is called every ~25 pages.
     Returns a set of lowercase usernames, or None on failure/abort so callers
     keep previous statuses instead of marking everything offline.
     """
-    global _CB_LAST_API_CALL
-    rooms: set = set()
-    offset = 0
-    total = 0
-    pages = 0
-    while True:
+    def fetch(offset: int) -> list:
         if should_continue and not should_continue():
-            return None
-        with _CB_API_LOCK:
-            wait = _CB_MIN_CALL_INTERVAL - (time.time() - _CB_LAST_API_CALL)
-            if wait > 0:
-                time.sleep(wait)
-            _CB_LAST_API_CALL = time.time()
-        try:
-            r = _http.get(
-                "https://chaturbate.com/api/ts/roomlist/room-list/",
-                params={"limit": 90, "offset": offset}, timeout=15,
-            )
-            if r.status_code != 200 or not r.content:
-                logger.warning(f"[CB] room-list HTTP {r.status_code} at offset {offset}")
-                return None
-            data = r.json()
-        except Exception as e:
-            logger.error(f"[CB] room-list fetch failed at offset {offset}: {e}")
-            return None
-        page = data.get("rooms") or []
-        if not total:
-            total = int(data.get("total_count") or 0)
+            raise InterruptedError
+        r = _cb_get(_CB_ROOMLIST_URL, params={"limit": _CB_ROOMLIST_PAGE,
+                                              "offset": offset}, timeout=15)
+        if r.status_code != 200 or not r.content:
+            raise RuntimeError(f"HTTP {r.status_code} at offset {offset}")
+        data = r.json()
+        if offset == 0:
+            fetch.total = int(data.get("total_count") or 0)
+        return data.get("rooms") or []
+
+    rooms: set = set()
+
+    def add(page: list):
         for room in page:
             u = (room.get("username") or "").lower()
             if u:
                 rooms.add(u)
-        offset += len(page)
-        pages += 1
-        if on_progress and (pages == 10 or pages % 25 == 0):
-            on_progress(offset, total)
-        if not page or (total and offset >= total):
-            return rooms
+
+    try:
+        first = fetch(0)
+    except InterruptedError:
+        return None
+    except Exception as e:
+        logger.warning(f"[CB] room-list fetch failed: {e}")
+        return None
+    add(first)
+    total = getattr(fetch, "total", 0)
+    if not first or not total:
+        return rooms
+    # Step by the page size (a page can carry an extra room; overlap is
+    # harmless in a set) and fetch one page past total_count to catch rooms
+    # that came online mid-sweep.
+    offsets = list(range(_CB_ROOMLIST_PAGE, total + _CB_ROOMLIST_PAGE,
+                         _CB_ROOMLIST_PAGE))
+    done = 1
+    with ThreadPoolExecutor(max_workers=workers,
+                            thread_name_prefix="cb-roomlist") as pool:
+        futures = [pool.submit(fetch, o) for o in offsets]
+        for fut in as_completed(futures):
+            try:
+                add(fut.result())
+            except InterruptedError:
+                pool.shutdown(wait=False, cancel_futures=True)
+                return None
+            except Exception as e:
+                pool.shutdown(wait=False, cancel_futures=True)
+                logger.warning(f"[CB] room-list fetch failed: {e}")
+                return None
+            done += 1
+            if on_progress and done % 25 == 0:
+                on_progress(min(done * _CB_ROOMLIST_PAGE, total), total)
+    return rooms
 
 
 def _stripchat_is_live(model_name: str) -> Optional[bool]:
@@ -329,8 +436,11 @@ def get_stream_url(site: str, model_name: str, thorough: bool = False,
     already gated on a fresh status — opening the Player, previewing — should
     pass a non-zero value."""
     if site == "chaturbate":
+        # thorough (manual REC) and max_age (Player/Preview) both mean a user
+        # is waiting — let those skip the CB pacing queue.
         return get_chaturbate_stream_url(model_name, max_retries=4 if thorough else 1,
-                                         max_age=max_age)
+                                         max_age=max_age,
+                                         interactive=thorough or max_age > 0)
     elif site == "stripchat":
         return get_stripchat_stream_url(model_name, max_age=max_age)
     elif site == "camsoda":
@@ -1024,8 +1134,8 @@ class StreamRecorder:
 
     # Online checks for due models run in a small shared pool: the old serial
     # pass meant one slow site response delayed every other model's check AND
-    # the split/stall housekeeping of active sessions. CB calls stay globally
-    # serialized by _CB_API_LOCK, so this doesn't hammer Cloudflare.
+    # the split/stall housekeeping of active sessions. CB calls still go
+    # through the shared pacer (_cb_wait), so this doesn't hammer Cloudflare.
     _CHECK_POOL_SIZE = 8
 
     def _monitor_loop(self, group: str):
@@ -1102,11 +1212,19 @@ class StreamRecorder:
     def _check_online(self, cfg: ModelConfig):
         if cfg.session:
             return
+        prev = cfg.status
         self._set_status(cfg, ModelStatus.CHECKING, "")
         url = get_stream_url(cfg.site, cfg.name)
         # Re-check session after slow network call — auto-rec may
         # have started a recording while we were fetching the URL
         if cfg.session:
+            return
+        if (not url and cfg.site == "chaturbate"
+                and prev in (ModelStatus.ONLINE, ModelStatus.OFFLINE)
+                and chaturbate_status_unknown(cfg.name)):
+            # Throttled / network blip: no answer isn't "offline". Keep the
+            # last known status; the next check will try again.
+            self._set_status(cfg, prev, "")
             return
         if url:
             cfg.stream_url = url
@@ -1175,7 +1293,7 @@ class StreamRecorder:
     def _saved_monitor_loop(self):
         """Saved-group monitor: 5s session housekeeping tick + a bulk status
         scan every check_interval, run in a worker thread so housekeeping
-        stays responsive during the multi-minute sweep."""
+        stays responsive while the scan runs."""
         try:
             last_scan = 0.0
             scan_thread: Optional[threading.Thread] = None
@@ -1219,9 +1337,18 @@ class StreamRecorder:
             logger.exception("Saved scan crashed")
             self._log(f"Saved scan CRASHED: {e!r} — see streamrecorder.log (%LOCALAPPDATA%\\Scr33nX)")
 
+    # Saved scan, Chaturbate: up to this many saved CB models are checked one
+    # by one; above it a full room-list sweep (~90 requests) is cheaper. The
+    # sweep is also capped to once per _CB_SWEEP_MIN_INTERVAL seconds, so a
+    # short check_interval can't turn it into constant load.
+    _CB_PER_MODEL_MAX = 45
+    _CB_SWEEP_MIN_INTERVAL = 60
+    _cb_last_sweep = 0.0
+
     def _scan_saved_pass_inner(self):
         """One bulk status pass over all saved-group models:
-        - Chaturbate: one room-list sweep, membership test (no per-model calls)
+        - Chaturbate: per-model lookups for small lists, else one room-list
+          sweep with a membership test (see _CB_PER_MODEL_MAX)
         - Stripchat/Camsoda: per-model checks through a small thread pool
         Models with an active session are skipped; statuses only change on a
         definitive online/offline answer (failures keep the previous status)."""
@@ -1304,7 +1431,35 @@ class StreamRecorder:
                                      name="saved-scan-mfc")
             t_mfc.start()
 
-        if cb and running():
+        if cb and running() and len(cb) <= self._CB_PER_MODEL_MAX:
+            # Few CB models: look each one up directly. That's fewer requests
+            # than a ~90-page sweep, and it caches each online model's URL,
+            # so opening her in the Player skips its own API call.
+            def check_cb(cfg: ModelConfig):
+                _url, live = chaturbate_lookup(cfg.name)
+                return cfg, live
+            with ThreadPoolExecutor(max_workers=6,
+                                    thread_name_prefix="saved-scan-cb") as pool:
+                futures = [pool.submit(check_cb, c) for c in cb]
+                for fut in as_completed(futures):
+                    if not running():
+                        pool.shutdown(wait=False, cancel_futures=True)
+                        break
+                    try:
+                        cfg, live = fut.result()
+                    except Exception:
+                        logger.exception("[saved-scan] CB check failed")
+                        continue
+                    if live is None:
+                        continue  # unreadable answer — keep previous status
+                    counts["chaturbate"] += live
+                    self._apply_scan_status(cfg, live)
+            if running():
+                self._log(f"Saved scan: Chaturbate done — "
+                          f"{counts['chaturbate']}/{len(cb)} online.")
+        elif cb and running() and (time.time() - self._cb_last_sweep
+                                   >= self._CB_SWEEP_MIN_INTERVAL):
+            self._cb_last_sweep = time.time()
             rooms = get_chaturbate_online_rooms(
                 running,
                 lambda got, total: self._log(
@@ -1315,11 +1470,15 @@ class StreamRecorder:
                               "(rate-limited?) — keeping previous statuses.")
             else:
                 for cfg in cb:
-                    online = cfg.name in rooms
+                    online = cfg.name.lower() in rooms
                     counts["chaturbate"] += online
                     self._apply_scan_status(cfg, online)
                 self._log(f"Saved scan: Chaturbate done — "
                           f"{counts['chaturbate']}/{len(cb)} online.")
+        elif cb:
+            # Sweep ran less than _CB_SWEEP_MIN_INTERVAL ago — CB statuses
+            # stand; don't count them as offline in the summary below.
+            cb = []
 
         if t_others is not None:
             t_others.join()

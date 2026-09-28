@@ -119,6 +119,22 @@ doppiocdn (Stripchat) and the other CDNs reject segment requests without a
 matching `Referer`/`Origin`. The relay injects the correct ones per `mode`
 (see `_REFERERS` in `cb_relay.py`).
 
+### Chaturbate is IPv4-only (since ~2026-09-23)
+
+Chaturbate's mmcdn edges (`edgeN-xxx.live.mmcdn.com`) answer **403** to any
+request that arrives over IPv6. The `token=` in `hls_source` is also bound to
+the IP that called the API. On a dual-stack connection Python prefers IPv6
+for both hops, so every playlist 403s, Player tiles log
+`manifestLoadError`, and nothing records. The fix is `cb_relay.IPv4Adapter`,
+which binds sockets to `0.0.0.0` so urllib3 skips the AAAA records. It is
+mounted on:
+- `cb_relay._cb_session`, used for all `mode="chaturbate"` fetches via
+  `_session_for(mode)`.
+- `recorder._http` for `https://chaturbate.com` only, so the token is minted
+  over IPv4 too.
+
+The other sites keep the default dual-stack session.
+
 ---
 
 ## 1b. Quality caps & auto-downgrade
@@ -268,30 +284,59 @@ ffmpeg -hide_banner -loglevel error
 **Single model:** `GET https://chaturbate.com/api/chatvideocontext/{name}/`
 returns JSON with `hls_source` (the master playlist URL) and `room_status`.
 
-- `room_status` in `{offline, away, private, hidden, ""}` → not recordable.
-- Empty body / HTTP 429/403/503 → **Cloudflare rate-limited**; treated as
-  "unknown" (returns None, keeps previous status — does NOT mark offline).
-- All CB API calls are serialized through a lock with a **1.5 s minimum gap**
-  between requests to avoid Cloudflare hammering.
+- `room_status` in `{offline, away, private, hidden, ""}`, or HTTP 404 → offline.
+- Throttled (HTTP 429/403/503, empty body, or a 200 that isn't JSON, e.g. a
+  Cloudflare challenge), a network error, or a garbled reply → **unknown**.
+  `chaturbate_lookup()` returns `live=None`, and `get_chaturbate_stream_url()`
+  marks the name via `chaturbate_status_unknown()`. The monitor
+  (`_check_online`) and the saved scan then **keep the previous status**
+  rather than flipping the model OFFLINE.
 - The monitor path retries once for CDN warmup; the manual-REC path retries 4×.
 
-**Bulk (saved watchlist):** instead of one request per model, do **one full
-room-list sweep** via the paginated public API
-(`/api/ts/roomlist/room-list/`, 90 rooms/page, ~100 pages, ~2.5 min at 1.5 s
-cadence) and test membership. This avoids the rate-limiting that per-model
-polling triggers. Returns `None` on failure so statuses are preserved.
+**Pacing (`_cb_get` / `_cb_wait`).** Every chaturbate.com API call goes
+through an adaptive pacer:
+- Background requests (monitor checks, saved-scan lookups, room-list pages)
+  reserve slots **0.2 s** apart, and several can be in flight at once.
+- A throttle signal doubles the spacing, up to 4 s (logged as
+  `[CB] throttled … request spacing now Xs`). Each clean response eases it
+  back down.
+- Interactive requests skip the queue unless the pacer is backing off. These
+  are the Player/Preview (`max_age > 0`) and manual REC (`thorough`). They
+  don't take slots, so they can't starve the sweep.
+
+It replaced a strict one-at-a-time lock with a 1.5 s gap. Measured
+2026-09-28: 2 full sweeps plus 16 parallel Player resolves were 196 requests,
+all 200, with no backoff.
+- A room-list sweep went from **~150 s to ~18 s**.
+- A 16-tile Player wall went from **~24 s to ~1.2 s** to resolve.
+
+**Bulk (saved watchlist).** Two paths, chosen by count:
+- **≤ 45 saved CB models** (`_CB_PER_MODEL_MAX`): per-model `chaturbate_lookup`
+  on 6 threads. This takes fewer requests than a sweep, and it fills the URL
+  cache, so the Player opens those models without an API call.
+- **More than 45:** one full room-list sweep
+  (`/api/ts/roomlist/room-list/`, 90 rooms/page, since the API returns 400
+  above 90; ~90 pages) and a membership test.
+  - Page 0 gives `total_count`. The rest are fetched on 4 threads, plus one
+    page past the total to catch rooms that came online mid-sweep.
+  - It runs at most once per `_CB_SWEEP_MIN_INTERVAL` (60 s), so a short
+    check interval can't turn it into constant load.
+  - It returns `None` on any failed page, so statuses are preserved.
 
 **Recording:** master URL → relay (`mode=chaturbate`) → ffmpeg. The relay strips
 LL-HLS partial-segment tags so only full segments are recorded.
 
-> **The 1.5 s gate is the dominant cost of a Chaturbate resolve.** Both
-> `_fetch_chaturbate_once` and the room-list sweep pass through `_CB_API_LOCK`
-> with a 1.5 s minimum gap, and the sweep holds it for ~2.5 minutes at a
-> stretch. The lock is not FIFO, so an interactive request repeatedly loses the
-> race: a resolve measured **0.6 s idle vs 3.0 s while a sweep runs**. Don't
-> "fix" this by letting interactive callers jump the queue — starving the sweep
-> would strand every saved Chaturbate model on a stale status, since the sweep
-> is their only liveness source. Use the resolve cache below instead.
+> **CB master tokens are effectively single-use.** Fetching the same
+> `…/llhls.m3u8?token=…` twice within ~40 s is 403, even from the same IP
+> and connection. The variant/audio playlists it lists carry a `?session=`
+> that stays valid while something polls it (a tile polling alongside
+> ffmpeg got only 200s), but expires once idle (403 about 55 s after the last
+> poll). So the relay caches each CB master playlist
+> (`_master_cached` / `_master_store`):
+> - It replays a copy younger than 30 s (`_MASTER_FRESH`) as is.
+> - An older copy, up to 300 s, is only a fallback when a fresh fetch is 403.
+> Without this, a Player tile retry, or a tile reusing a URL that a
+> recording already opened, fails with `manifestLoadError`.
 
 ### Stripchat (`ST`)
 
@@ -372,9 +417,10 @@ the oldest cached answer the caller will accept, in seconds.
   that isn't ONLINE/RECORDING, so the URL they reuse is no staler than the
   status the user is looking at.
 
-The win is largest on Chaturbate, where a cache hit skips the `_CB_API_LOCK`
-gate entirely: a Player open drops from ~0.6 s (idle) or ~3.0 s (sweep running)
-to **0 ms**, and sends no request at all.
+The win is largest on Chaturbate: a cache hit sends no request at all, so
+the Player opens a model the monitor or saved scan just checked in **0 ms**.
+Reusing the URL is safe even though CB tokens are single-use, because the
+relay replays its cached master playlist (see above).
 
 ### Camsoda (`CS`)
 
@@ -448,7 +494,8 @@ cached video state so the recorder can show `PRIVATE` without a second round-tri
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
-| All CB models show OFFLINE | Cloudflare rate-limit | `_fetch_chaturbate_once` (429/403/empty) |
+| CB statuses stop updating / `[CB] throttled` in the log | Cloudflare rate-limit; the pacer is backing off (statuses are kept, not flipped OFFLINE) | `_cb_get` / `_CB_BASE_INTERVAL`; raise the base spacing if it recurs |
+| CB resolves ("url ok") but every playlist 403s / `manifestLoadError` | Edge or API reached over IPv6 | §1 "Chaturbate is IPv4-only"; `IPv4Adapter` mounts |
 | Stripchat won't record, no browser opens | MOUFLON keys rotated; should fall back | `stripchat_native.resolve` returns None → check Playwright |
 | Stripchat records but bandwidth meter ignores it | On Playwright fallback (expected — bypasses relay) | `launch_stripchat_playwright` |
 | Camsoda "extension not whitelisted" | Relay extension-normalize regressed | `_wrap_url` (.m4s) + `-allowed_extensions ALL` |

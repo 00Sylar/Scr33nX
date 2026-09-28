@@ -22,3 +22,5 @@ streamrecorder_crash.log
 libmpv-2.dll
 mpv-2.dll
 mpv-1.dll
+# Non-adult port — has its own repo, must never be tracked here
+StreamingHub/
