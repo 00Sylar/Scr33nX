@@ -119,21 +119,44 @@ doppiocdn (Stripchat) and the other CDNs reject segment requests without a
 matching `Referer`/`Origin`. The relay injects the correct ones per `mode`
 (see `_REFERERS` in `cb_relay.py`).
 
-### Chaturbate is IPv4-only (since ~2026-09-23)
+### Chaturbate edges are gated by IP family — and it flips
 
-Chaturbate's mmcdn edges (`edgeN-xxx.live.mmcdn.com`) answer **403** to any
-request that arrives over IPv6. The `token=` in `hls_source` is also bound to
-the IP that called the API. On a dual-stack connection Python prefers IPv6
-for both hops, so every playlist 403s, Player tiles log
-`manifestLoadError`, and nothing records. The fix is `cb_relay.IPv4Adapter`,
-which binds sockets to `0.0.0.0` so urllib3 skips the AAAA records. It is
-mounted on:
-- `cb_relay._cb_session`, used for all `mode="chaturbate"` fetches via
-  `_session_for(mode)`.
-- `recorder._http` for `https://chaturbate.com` only, so the token is minted
-  over IPv4 too.
+Chaturbate's mmcdn edges (`edgeN-xxx.live.mmcdn.com`) answer **403** (bare
+nginx page) to every request — master, media playlist, init, segments — that
+arrives over the *wrong* IP family, and which family is wrong has changed:
 
-The other sites keep the default dual-stack session.
+| Date | Edge refuses | Edge accepts |
+|---|---|---|
+| ~2026-09-23 | IPv6 | IPv4 |
+| 2026-10-02 | IPv4 | IPv6 |
+
+The symptom either way is that the model resolves ("url ok") and then every
+playlist 403s: ffmpeg logs `Server returned 403 Forbidden`, Player tiles log
+`manifestLoadError`, nothing records. Measured 2026-10-02 (same machine,
+dual-stack): `mint over v4 → fetch over v6 = 200`, `mint v6 → fetch v4 = 403`
+— so **only the fetch family matters; the token is not bound to the minting
+IP**, and a 403 from the wrong family does **not** spend the token (the same
+token then succeeds over the other family). The earlier V2.6 fix hard-pinned
+IPv4 (and believed the token was IP-bound), which is exactly what broke when
+the edge flipped.
+
+So nothing is pinned any more. `cb_relay._cb_edge_get` (used for every
+`mode="chaturbate"` upstream GET via `_get`, including the streaming
+cache-miss path) tries the preferred family first (`_cb_order`, IPv6 by
+default), and on a **403** or a **connection error** (no route for that
+family) retries on the other. A **2xx** from a non-preferred family promotes
+it to the front (logged once: `Chaturbate edges now reached over IPv6 (the
+other family was refused)`), so the cost of a flip is one extra request, once.
+404/5xx are returned as is (the edge accepted the family). Both families
+403 → the last 403 is returned (a genuinely spent token; the master cache
+below still handles it).
+
+Each family is its own `requests.Session` whose adapter binds the socket's
+source address to the family wildcard (`0.0.0.0` / `::`) so urllib3 skips the
+other family's DNS records (`cb_relay._FamilyAdapter`). The Chaturbate **API**
+(`recorder._http`, `https://chaturbate.com`) is plain dual-stack — it works
+over both families and the token doesn't care where it was minted. The other
+sites keep the default dual-stack session.
 
 ---
 
@@ -495,7 +518,7 @@ cached video state so the recorder can show `PRIVATE` without a second round-tri
 | Symptom | Likely cause | Where to look |
 |---|---|---|
 | CB statuses stop updating / `[CB] throttled` in the log | Cloudflare rate-limit; the pacer is backing off (statuses are kept, not flipped OFFLINE) | `_cb_get` / `_CB_BASE_INTERVAL`; raise the base spacing if it recurs |
-| CB resolves ("url ok") but every playlist 403s / `manifestLoadError` | Edge or API reached over IPv6 | §1 "Chaturbate is IPv4-only"; `IPv4Adapter` mounts |
+| CB resolves ("url ok") but every playlist 403s / `manifestLoadError` | Edge refusing the IP family in use (it has flipped before); the relay should auto-switch | §1 "Chaturbate edges are gated by IP family"; `cb_relay._cb_edge_get`; look for the `Chaturbate edges now reached over …` log line. If both families 403, the cause is something else (headers/token) — probe with `requests` over each family |
 | Stripchat won't record, no browser opens | MOUFLON keys rotated; should fall back | `stripchat_native.resolve` returns None → check Playwright |
 | Stripchat records but bandwidth meter ignores it | On Playwright fallback (expected — bypasses relay) | `launch_stripchat_playwright` |
 | Camsoda "extension not whitelisted" | Relay extension-normalize regressed | `_wrap_url` (.m4s) + `-allowed_extensions ALL` |

@@ -35,14 +35,15 @@ HEADERS = {
 # Shared session for connection pooling — reduces socket churn under many models
 _http = requests.Session()
 _http.headers.update(HEADERS)
-# Chaturbate stream tokens are bound to the IP that called its API, and the
-# mmcdn edges refuse IPv6 — so CB API calls must go out over IPv4 to match
-# the relay's IPv4-only edge fetches (cb_relay.IPv4Adapter).
-from cb_relay import IPv4Adapter as _IPv4Adapter
 # Sized for a Player wall resolving at once alongside monitor checks and
 # room-list sweep workers, so none of them waits on a pooled connection.
+# Left dual-stack on purpose: a CB stream token isn't bound to the family (or
+# IP) that minted it — only the edge *fetch* is gated by family, and the relay
+# adapts to that itself (cb_relay._cb_edge_get). Pinning the API to one family
+# is what broke recording when Chaturbate flipped from refusing IPv6 to
+# refusing IPv4.
 _http.mount("https://chaturbate.com",
-            _IPv4Adapter(pool_connections=4, pool_maxsize=48))
+            requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=48))
 
 
 class ModelStatus(Enum):

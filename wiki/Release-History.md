@@ -6,6 +6,21 @@ in the repository, and each version is also a
 
 ---
 
+## V2.7 — 2026‑10‑02
+
+**Chaturbate fix AGAIN!** Chaturbate changed its connection rules a second
+time: its video servers now refuse IPv4 (the opposite of what broke things in
+V2.6), so the V2.6 fix made every Chaturbate stream fail instead of helping.
+V2.7 no longer picks a side.
+
+**Fixed**
+- **Chaturbate recording and Player tiles work again.** Scr33nX tries one
+  connection type; if Chaturbate's servers refuse it, it switches to the other
+  and remembers which one works. If Chaturbate flips again, it adapts on its
+  own, with no new release needed. Other sites are unchanged.
+
+---
+
 ## V2.6 — 2026‑09‑28
 
 **Chaturbate is back, and faster.** Around 2026‑09‑23 Chaturbate's video

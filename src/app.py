@@ -5,7 +5,7 @@ app.py — Scr33nX — GUI
 # Single source of truth for the running version. Shown in the header and
 # compared against the latest GitHub release by the update checker.
 # When cutting a release (see CONTRIBUTING.md), bump this to match the new tag.
-APP_VERSION = "2.6"
+APP_VERSION = "2.7"
 GITHUB_REPO = "00Sylar/Scr33nX"   # owner/repo, used for the update check
 
 import os

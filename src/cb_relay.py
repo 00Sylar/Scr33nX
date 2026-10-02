@@ -47,30 +47,103 @@ _session.mount("https://", _adapter)
 _session.mount("http://", _adapter)
 
 
-class IPv4Adapter(requests.adapters.HTTPAdapter):
-    """HTTPAdapter that only connects over IPv4. Binding the source address
-    to 0.0.0.0 makes every IPv6 candidate from getaddrinfo fail locally, so
-    urllib3 falls through to the host's A record.
+class _FamilyAdapter(requests.adapters.HTTPAdapter):
+    """HTTPAdapter that only connects over one IP family. Binding the source
+    address to the family's wildcard ("0.0.0.0" / "::") makes every candidate
+    of the other family from getaddrinfo fail locally, so urllib3 falls
+    through to the host's A (or AAAA) record."""
 
-    Chaturbate's mmcdn edges answer 403 to IPv6 clients (since ~2026-09-23),
-    and its stream tokens are minted for the IP that called the API — so on
-    a dual-stack connection both the API and the edge must go out over IPv4."""
+    def __init__(self, source: str, **kwargs):
+        self._source = source  # set first: super().__init__ builds the pool
+        super().__init__(**kwargs)
 
     def init_poolmanager(self, *args, **kwargs):
-        kwargs["source_address"] = ("0.0.0.0", 0)
+        kwargs["source_address"] = (self._source, 0)
         super().init_poolmanager(*args, **kwargs)
 
 
-# Chaturbate traffic gets its own IPv4-only session (see IPv4Adapter); the
-# other sites keep the default dual-stack one.
-_cb_session = requests.Session()
-_cb_adapter = IPv4Adapter(pool_connections=32, pool_maxsize=128)
-_cb_session.mount("https://", _cb_adapter)
-_cb_session.mount("http://", _cb_adapter)
+# Chaturbate's mmcdn edges 403 every request (master, media playlist, init,
+# segments) that arrives over the wrong IP family, and Chaturbate has flipped
+# which one that is: IPv6 was refused from ~2026-09-23, then by 2026-10-02 it
+# was IPv4 that got refused and IPv6 that worked. The family only gates the
+# *fetch* — a token minted over one family plays fine over the other — and a
+# 403 from the wrong family doesn't spend the token. So rather than pin a
+# family, CB edge requests try the preferred one, fall back to the other on a
+# 403 or a connection failure, and make whichever answered 2xx the preferred
+# one (see _cb_edge_get). Other sites use the default dual-stack session.
+_cb_sessions: dict[str, requests.Session] = {}
+for _fam, _src in (("v6", "::"), ("v4", "0.0.0.0")):
+    _s = requests.Session()
+    _a = _FamilyAdapter(_src, pool_connections=32, pool_maxsize=128)
+    _s.mount("https://", _a)
+    _s.mount("http://", _a)
+    _cb_sessions[_fam] = _s
+del _fam, _src, _s, _a
+_cb_order = ["v6", "v4"]   # preference order; head is tried first
+_cb_order_lock = threading.Lock()
 
 
-def _session_for(mode: str) -> requests.Session:
-    return _cb_session if mode == "chaturbate" else _session
+def _cb_prefer(fam: str):
+    """Make `fam` the first family tried for Chaturbate edge requests."""
+    with _cb_order_lock:
+        if _cb_order[0] == fam:
+            return
+        _cb_order.remove(fam)
+        _cb_order.insert(0, fam)
+    logger.info("Chaturbate edges now reached over %s (the other family was "
+                "refused)", "IPv6" if fam == "v6" else "IPv4")
+
+
+def _cb_edge_get(url: str, headers: dict, timeout, stream: bool = False
+                 ) -> requests.Response:
+    """GET a Chaturbate edge URL over whichever IP family the edge accepts.
+
+    Tries the preferred family; a 403 (the edge refusing that family) or a
+    connection error (no route for it) moves on to the other. A 2xx from a
+    non-preferred family promotes it. Any other status — 404, 5xx — means the
+    edge accepted the family, so it's returned as is. If every family 403s
+    the last 403 is returned (a genuinely spent/expired token).
+
+    If the *preferred* family raised (a timeout on a slow edge, a reset) and
+    nothing else succeeded, the exception is re-raised rather than reported
+    as the other family's 403 — that 403 is just the refused family, and
+    raising lets the caller's retry loop try the preferred family again."""
+    with _cb_order_lock:
+        order = list(_cb_order)
+    last_resp, last_exc, pref_exc = None, None, None
+    for fam in order:
+        try:
+            r = _cb_sessions[fam].get(url, timeout=timeout, headers=headers,
+                                      stream=stream)
+        except requests.RequestException as exc:
+            last_exc = exc
+            if fam == order[0]:
+                pref_exc = exc
+            continue
+        if r.status_code != 403:
+            if 200 <= r.status_code < 300:
+                _cb_prefer(fam)
+            if last_resp is not None:
+                last_resp.close()
+            return r
+        if last_resp is not None:
+            last_resp.close()
+        last_resp = r
+    if pref_exc is not None:
+        if last_resp is not None:
+            last_resp.close()
+        raise pref_exc
+    if last_resp is not None:
+        return last_resp
+    raise last_exc
+
+
+def _get(url: str, mode: str, timeout, stream: bool = False) -> requests.Response:
+    """One upstream GET for `mode` (family-adaptive for Chaturbate)."""
+    headers = _headers(mode)
+    if mode == "chaturbate":
+        return _cb_edge_get(url, headers, timeout, stream)
+    return _session.get(url, timeout=timeout, headers=headers, stream=stream)
 
 
 # ── Bandwidth accounting ──────────────────────────────────────────────────────
@@ -295,11 +368,10 @@ def _headers(mode: str) -> dict:
 
 def _fetch(url: str, mode: str = "chaturbate", tries: int = 3,
            timeout=20) -> requests.Response:
-    headers = _headers(mode)
     last_exc = None
     for _ in range(tries):
         try:
-            return _session_for(mode).get(url, timeout=timeout, headers=headers)
+            return _get(url, mode, timeout)
         except requests.RequestException as exc:
             last_exc = exc
     raise last_exc
@@ -546,8 +618,7 @@ class _Handler(BaseHTTPRequestHandler):
         """Cache miss: forward the segment, streaming chunks to ffmpeg as they
         arrive instead of buffering the whole segment first."""
         try:
-            r = _session_for(mode).get(target, timeout=20, headers=_headers(mode),
-                             stream=True)
+            r = _get(target, mode, 20, stream=True)
         except requests.RequestException:
             self.send_error(502)
             return

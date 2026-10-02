@@ -12,6 +12,25 @@ grouped by date / milestone.
 
 ---
 
+## V2.7 — 2026-10-02
+
+**Chaturbate fix AGAIN!** Chaturbate changed its connection rules a second
+time, undoing the V2.6 fix. V2.7 adapts on its own, so it shouldn't break
+this way again.
+
+### Fixed
+- **Chaturbate recording works again (and shouldn't break the same way
+  twice).** The V2.6 fix pinned Chaturbate to IPv4 because its video servers
+  had started refusing IPv6. They have since flipped and now refuse IPv4
+  instead, so every Chaturbate record failed instantly with
+  `403 Forbidden` and Player tiles showed `manifestLoadError` — even though
+  the model resolved fine. Scr33nX no longer picks a side: it tries one
+  connection type, and if Chaturbate's servers refuse it, switches to the
+  other and remembers which one works, so a future flip back is handled
+  automatically. Other sites are unchanged.
+
+---
+
 ## V2.6 — 2026-09-28
 
 **Chaturbate works again, and it's much faster: Player, saved scan and
