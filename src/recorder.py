@@ -15,6 +15,8 @@ import threading
 import subprocess
 import requests
 import logging
+
+import netproxy
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _futures_wait
 from datetime import datetime
 from enum import Enum
@@ -322,7 +324,8 @@ def get_camsoda_stream_url(model_name: str) -> Optional[str]:
     """
     api_url = f"https://www.camsoda.com/api/v1/video/vtoken/{model_name}"
     try:
-        r = _http.get(api_url, timeout=15)
+        r = _http.get(api_url, timeout=15,
+                      proxies=netproxy.requests_proxies("camsoda"))
         if r.status_code != 200:
             return None
         data = r.json()
@@ -638,8 +641,13 @@ def launch_stripchat_playwright(model_name: str, output_path: str) -> subprocess
         flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         flags = 0
+    env = dict(os.environ)
+    proxy = netproxy.playwright_proxy("stripchat")
+    if proxy:
+        env["SCR33NX_PROXY"] = proxy     # read by stripchat_live.py
     return subprocess.Popen(
         cmd,
+        env=env,
         stdin=subprocess.PIPE,
         # stdout is never read — a PIPE would silently fill and block the
         # recorder script; stderr IS drained by _drain_stderr

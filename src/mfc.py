@@ -38,6 +38,8 @@ from typing import Optional
 
 import requests
 
+import netproxy
+
 logger = logging.getLogger("StreamRecorder")
 
 _UA = (
@@ -64,7 +66,8 @@ def _get_serverconfig() -> Optional[dict]:
     if _serverconfig is not None and time.time() - _serverconfig_ts < _SC_TTL:
         return _serverconfig
     try:
-        r = _session.get(_SERVERCONFIG_URL, headers=_HEADERS, timeout=15)
+        r = _session.get(_SERVERCONFIG_URL, headers=_HEADERS, timeout=15,
+                         proxies=netproxy.requests_proxies("myfreecams"))
         r.raise_for_status()
         # File is a bare JSON object (occasionally with a `var x =` wrapper)
         m = re.search(r"\{.*\}", r.text, re.DOTALL)
@@ -103,6 +106,7 @@ class _FCSClient:
                     timeout=self.timeout,
                     origin="https://www.myfreecams.com",
                     header=[f"User-Agent: {_UA}"],
+                    **netproxy.ws_kwargs("myfreecams"),
                 )
                 self.ws.send("hello fcserver\n\0")
                 rand = random.randint(10_000_000, 99_999_999)
@@ -277,7 +281,8 @@ def get_stream_url(name: str, max_retries: int = 1) -> Optional[str]:
     for attempt in range(max_retries + 1):
         for url in candidates:
             try:
-                r = _session.get(url, headers=_HEADERS, timeout=10)
+                r = _session.get(url, headers=_HEADERS, timeout=10,
+                                 proxies=netproxy.requests_proxies("myfreecams"))
                 if r.status_code == 200 and "#EXTM3U" in r.text[:64]:
                     return url
             except Exception:

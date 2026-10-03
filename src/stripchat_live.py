@@ -165,10 +165,12 @@ async def run(model: str, output_path: str) -> int:
 
     async with async_playwright() as p:
         try:
-            browser = await p.chromium.launch(headless=True, args=[
-                "--autoplay-policy=no-user-gesture-required",
-                "--mute-audio",
-            ])
+            proxy = os.environ.get("SCR33NX_PROXY", "")
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--autoplay-policy=no-user-gesture-required",
+                      "--mute-audio"],
+                **({"proxy": {"server": proxy}} if proxy else {}))
         except Exception as e:
             print(f"[launch-err] {e}", file=sys.stderr)
             try: ff.stdin.close()

@@ -35,6 +35,8 @@ from typing import Optional
 
 import requests
 
+import netproxy
+
 # keyId → decryption key. Override/extend via stripchat_mouflon_keys.json
 # placed next to this file (no code change needed when keys rotate).
 MOUFLON_KEYS = {
@@ -178,7 +180,8 @@ def page_info(model_name: str, max_age: float = 0.0) -> Optional[dict]:
 
     try:
         r = _session.get(f"https://stripchat.com/{model_name}",
-                         headers=_HTML_HEADERS, timeout=20)
+                         headers=_HTML_HEADERS, timeout=20,
+                         proxies=netproxy.requests_proxies("stripchat"))
     except requests.RequestException:
         return None
     if r.status_code == 404:
@@ -243,7 +246,8 @@ def resolve(model_name: str, max_age: float = 0.0) -> Optional[str]:
         f"https://edge-hls.doppiocdn.com/hls/{sid}/master/{sid}_auto.m3u8"
     )
     try:
-        master = _session.get(master_url, headers=_HEADERS, timeout=20).text
+        master = _session.get(master_url, headers=_HEADERS, timeout=20,
+                              proxies=netproxy.requests_proxies("stripchat")).text
     except requests.RequestException:
         return None
 
@@ -260,7 +264,8 @@ def resolve(model_name: str, max_age: float = 0.0) -> Optional[str]:
 
     # Validate it's a real public stream, not an advert placeholder loop.
     try:
-        media = _session.get(keyed, headers=_HEADERS, timeout=20).text
+        media = _session.get(keyed, headers=_HEADERS, timeout=20,
+                             proxies=netproxy.requests_proxies("stripchat")).text
     except requests.RequestException:
         return None
     if "MOUFLON-ADVERT" in media or "/cpa/" in media:

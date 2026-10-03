@@ -38,6 +38,7 @@ import audit
 import links as model_links
 import recorder as recorder_mod
 import cb_relay
+import netproxy
 import settings as settings_mod
 from recorder import StreamRecorder, ModelStatus
 from settings import load_settings, save_settings, save_pipeline_settings
@@ -153,6 +154,7 @@ class WebCore:
 
     def __init__(self):
         self.settings = load_settings()
+        netproxy.configure(self.settings.proxy_default, self.settings.proxies)
         self.recorder = StreamRecorder()
         self.recorder.output_dir     = self.settings.output_dir
         self.recorder.max_size_mb    = self.settings.max_size_mb
@@ -2159,6 +2161,8 @@ class Bridge:
             "preview_player_path": s.preview_player_path,
             "max_player_tiles": s.max_player_tiles,
             "api_token": s.api_token,
+            "proxy_default": s.proxy_default,
+            "proxies": {site: s.proxies.get(site, "") for site in netproxy.SITES},
             "quality_options": [{"label": l, "height": h}
                                 for l, h in QUALITY_OPTIONS.items()],
         }
@@ -2208,6 +2212,27 @@ class Bridge:
         s.preview_player_path   = str(p.get("preview_player_path", "")).strip()
         s.max_player_tiles      = max(1, min(100, _int(p.get("max_player_tiles"), s.max_player_tiles) or s.max_player_tiles))
         s.api_token             = str(p.get("api_token", s.api_token)).strip()
+        # Proxies: a bad address keeps the previous value and is reported in
+        # the saved note — never a dialog, never a crash.
+        proxy_errs = []
+        if "proxy_default" in p:
+            norm, err = netproxy.validate(p.get("proxy_default"))
+            if err or norm == netproxy.DIRECT:
+                proxy_errs.append(f"default proxy: {err or 'use a real address'}")
+            else:
+                s.proxy_default = norm
+        if isinstance(p.get("proxies"), dict):
+            for site in netproxy.SITES:
+                if site not in p["proxies"]:
+                    continue
+                norm, err = netproxy.validate(p["proxies"].get(site))
+                if err:
+                    proxy_errs.append(f"{site} proxy: {err}")
+                elif norm:
+                    s.proxies[site] = norm
+                else:
+                    s.proxies.pop(site, None)
+        netproxy.configure(s.proxy_default, s.proxies)
         c.recorder.quality_global = s.max_quality
         c.recorder.auto_downgrade_enabled = s.auto_downgrade_enabled
         c.recorder.playwright_fallback_enabled = s.playwright_fallback_enabled
@@ -2228,13 +2253,21 @@ class Bridge:
             c._log_add("⚠ Output folder is inside a cloud-synced directory "
                        "(OneDrive/Dropbox) — a local folder is strongly "
                        "recommended.", "warn")
+        if proxy_errs:
+            note = "Proxy not changed — " + "; ".join(proxy_errs)
         eng = (s.preview_engine or "auto").lower()
-        if eng == "mpv" and not c._detect_player("mpv"):
+        if note:
+            pass
+        elif eng == "mpv" and not c._detect_player("mpv"):
             note = "mpv isn't installed — preview falls back to VLC/ffplay."
         elif eng == "vlc" and not c._detect_player("vlc"):
             note = "VLC isn't installed — preview falls back to another engine."
         c._log_add("Settings saved." + (f" ({note})" if note else ""), "success")
         return {"ok": True, "note": note}
+
+    def proxy_test(self, site="", proxy=""):
+        """Settings → Proxy → Test. Runs on the JS-API thread; no dialogs."""
+        return netproxy.test(str(proxy or ""), str(site or ""))
 
     def pick_folder(self, initial=""):
         import webview

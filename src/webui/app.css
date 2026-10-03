@@ -687,3 +687,10 @@ input[type="range"]::-webkit-slider-thumb:hover { box-shadow: var(--shadow-sm), 
   text-align: center; box-shadow: var(--shadow-lg); cursor: default;
 }
 .privacy-exit h3 { font: 600 var(--fs-3) var(--font-display); margin-bottom: var(--sp-4); }
+
+/* Settings → Proxy rows */
+.proxy-row { display: flex; gap: 8px; align-items: center; }
+.proxy-row input { flex: 1; min-width: 0; }
+.proxy-res { font-size: var(--fs-0); color: var(--text-3); min-height: 1em; }
+.proxy-res.ok { color: var(--ok); }
+.proxy-res.bad { color: var(--rec); }

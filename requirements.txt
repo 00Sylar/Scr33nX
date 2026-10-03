@@ -3,6 +3,7 @@
 # Then (Stripchat browser fallback only):  playwright install chromium
 
 requests>=2.31.0                            # HTTP: site APIs + local HLS relay (cb_relay.py)
+PySocks>=1.7.1                              # SOCKS proxy support for Settings → Proxy (netproxy.py)
 websocket-client>=1.7.0                     # MyFreeCams FCS protocol resolver (mfc.py)
 winotify>=1.1.0; sys_platform == "win32"    # Windows toast notifications (notifier.py)
 playwright>=1.50.0                          # Stripchat fallback recorder (stripchat_live.py)

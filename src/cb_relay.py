@@ -26,6 +26,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
 
+import netproxy
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_UA = (
@@ -139,11 +141,16 @@ def _cb_edge_get(url: str, headers: dict, timeout, stream: bool = False
 
 
 def _get(url: str, mode: str, timeout, stream: bool = False) -> requests.Response:
-    """One upstream GET for `mode` (family-adaptive for Chaturbate)."""
+    """One upstream GET for `mode` (family-adaptive for Chaturbate, or via the
+    site's proxy when one is set in Settings)."""
     headers = _headers(mode)
-    if mode == "chaturbate":
+    proxies = netproxy.requests_proxies(mode)   # user-set proxy for this site
+    if mode == "chaturbate" and not proxies:
         return _cb_edge_get(url, headers, timeout, stream)
-    return _session.get(url, timeout=timeout, headers=headers, stream=stream)
+    # Through a proxy the proxy picks the route, so the IP-family fallback
+    # is skipped (a 403 is returned as is).
+    return _session.get(url, timeout=timeout, headers=headers, stream=stream,
+                        proxies=proxies)
 
 
 # ── Bandwidth accounting ──────────────────────────────────────────────────────

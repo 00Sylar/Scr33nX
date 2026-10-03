@@ -73,6 +73,8 @@ class AppSettings:
     preview_player_path: str = ""              # optional override path to mpv.exe/vlc.exe (empty = auto-detect)
     max_player_tiles: int = 9                  # Player tab: cap on simultaneously open (and streaming) tiles
     api_token: str = ""                        # local API shared secret ("" = no auth, default)
+    proxy_default: str = ""                    # outbound proxy for every site without its own ("" = direct)
+    proxies: dict = None                       # {"chaturbate": "socks5h://host:port" | "direct", ...} per-site override
     models: List[dict] = None                  # [{name, site, auto_rec, max_q}, ...]
     saved_models: List[dict] = None            # [{name, site}, ...]  view-only list
     ranks: dict = None                         # "site:name" → 0-5 star rank
@@ -98,6 +100,8 @@ class AppSettings:
             self.saved_models = []
         if self.ranks is None:
             self.ranks = {}
+        if self.proxies is None:
+            self.proxies = {}
         if self.vip_list is None:
             self.vip_list = []
         if self.model_links is None:
@@ -251,6 +255,9 @@ def load_settings() -> AppSettings:
     s.preview_player_path = main.get("preview_player_path", s.preview_player_path)
     s.max_player_tiles = max(1, min(100, int(main.get("max_player_tiles", s.max_player_tiles) or s.max_player_tiles)))
     s.api_token = str(main.get("api_token", "") or "")
+    s.proxy_default = str(main.get("proxy_default", "") or "")
+    s.proxies = {str(k): str(v) for k, v in (main.get("proxies") or {}).items()
+                 if isinstance(v, str)} if isinstance(main.get("proxies"), dict) else {}
     s.models = main.get("models", [])
     s.saved_models = main.get("saved_models", [])
     s.ranks = main.get("ranks", {}) or {}
@@ -309,6 +316,8 @@ def save_settings(s: AppSettings):
         "preview_player_path": s.preview_player_path,
         "max_player_tiles": s.max_player_tiles,
         "api_token": s.api_token,
+        "proxy_default": s.proxy_default,
+        "proxies": s.proxies,
         "models": s.models,
         "saved_models": s.saved_models,
         "ranks": s.ranks,

@@ -34,6 +34,17 @@ ffmpeg never talks to the CDN directly. All HLS traffic goes through a relay on
   *Note: the browser fallback doesn't pass through the relay, so it isn't
   counted by the bandwidth meter.*
 
+## Proxy
+
+Settings → 🌐 Proxy lets a site's traffic take another route (`netproxy.py`).
+Resolution per site: its own entry (`direct` = bypass) → the default proxy →
+none. The relay fetches a proxied site's video through it (for Chaturbate this
+replaces the IPv4/IPv6 fallback — the proxy picks the route); Stripchat,
+Camsoda and MyFreeCams also send their lookups through it (the MFC websocket
+too; Stripchat's browser fallback gets it as a launch argument). Chaturbate's
+room lookups always stay direct — only its video servers refuse networks.
+Local traffic (relay, control API) never uses a proxy.
+
 ## Reliability
 
 - **Stuck‑RECORDING → offline stall probe** — when a recording's file stalls

@@ -357,6 +357,52 @@
               <input id="s-player-max" title="Caps how many tiles you can have open in the Player tab. Every open tile streams live (muted) at once, so raising this raises bandwidth/CPU use too — lower it if you're stretched thin."></div>
           </div>
           <div class="card">
+            <h3>🌐 Proxy</h3>
+            <div class="vip-hint" style="margin:0 0 10px">Route Scr33nX's traffic for a site through
+              a proxy — for when a site refuses your network (e.g. Chaturbate answering <b>403</b>
+              to your ISP). Use any SOCKS5/HTTP proxy, such as
+              <b>Cloudflare WARP in proxy mode</b>: <code>socks5h://127.0.0.1:40000</code>.
+              Empty = connect directly. Everything else on your PC is unaffected.</div>
+            <div class="field"><label>Default proxy (every site that has no proxy of its own)</label>
+              <div class="proxy-row">
+                <input id="s-proxy-default" spellcheck="false" placeholder="empty = direct, e.g. socks5h://127.0.0.1:40000">
+                <button class="btn mini" data-ptest="">Test</button>
+              </div>
+              <span class="proxy-res" data-pres=""></span>
+            </div>
+            <div class="field"><label>Chaturbate <span style="color:var(--text-3)">(video only — room lookups stay direct)</span></label>
+              <div class="proxy-row">
+                <input class="s-proxy-site" data-site="chaturbate" spellcheck="false" placeholder="empty = default · direct = never proxy">
+                <button class="btn mini" data-ptest="chaturbate">Test</button>
+              </div>
+              <span class="proxy-res" data-pres="chaturbate"></span>
+            </div>
+            <div class="field"><label>Stripchat</label>
+              <div class="proxy-row">
+                <input class="s-proxy-site" data-site="stripchat" spellcheck="false" placeholder="empty = default · direct = never proxy">
+                <button class="btn mini" data-ptest="stripchat">Test</button>
+              </div>
+              <span class="proxy-res" data-pres="stripchat"></span>
+            </div>
+            <div class="field"><label>Camsoda</label>
+              <div class="proxy-row">
+                <input class="s-proxy-site" data-site="camsoda" spellcheck="false" placeholder="empty = default · direct = never proxy">
+                <button class="btn mini" data-ptest="camsoda">Test</button>
+              </div>
+              <span class="proxy-res" data-pres="camsoda"></span>
+            </div>
+            <div class="field"><label>MyFreeCams</label>
+              <div class="proxy-row">
+                <input class="s-proxy-site" data-site="myfreecams" spellcheck="false" placeholder="empty = default · direct = never proxy">
+                <button class="btn mini" data-ptest="myfreecams">Test</button>
+              </div>
+              <span class="proxy-res" data-pres="myfreecams"></span>
+            </div>
+            <div class="vip-hint">Applies on Save to new requests; a recording already running
+              keeps its current route until it restarts. Stripchat's browser fallback
+              supports SOCKS/HTTP proxies without a username/password.</div>
+          </div>
+          <div class="card">
             <h3>🔌 Local API</h3>
             <div class="field"><label>API token (optional — empty = no authentication)</label>
               <input id="s-api-token" spellcheck="false" placeholder="empty = any local app may control Scr33nX">

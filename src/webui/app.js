@@ -644,6 +644,10 @@ async function loadSettings() {
   $("s-ppath").value = s.preview_player_path;
   $("s-player-max").value = s.max_player_tiles;
   $("s-api-token").value = s.api_token || "";
+  $("s-proxy-default").value = s.proxy_default || "";
+  document.querySelectorAll(".s-proxy-site").forEach(i => {
+    i.value = (s.proxies || {})[i.dataset.site] || "";
+  });
   playerMaxTiles = s.max_player_tiles;
   runSystemCheck();
   loadVip();
@@ -711,10 +715,38 @@ $("s-save").addEventListener("click", async () => {
     preview_player_path: $("s-ppath").value,
     max_player_tiles: $("s-player-max").value,
     api_token: $("s-api-token").value,
+    proxy_default: $("s-proxy-default").value,
+    proxies: Object.fromEntries([...document.querySelectorAll(".s-proxy-site")]
+      .map(i => [i.dataset.site, i.value])),
   });
   playerMaxTiles = Number($("s-player-max").value) || playerMaxTiles;
   renderPlayerTab();
   toast("✓ Settings saved" + (r.note ? ` — ${r.note}` : ""));
+});
+
+// Settings → Proxy → Test: tests what that row would use (its own value, else
+// the default; "direct" tests a plain connection). Doesn't need Save first.
+document.querySelectorAll("button[data-ptest]").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    if (!API) return;
+    const site = btn.dataset.ptest;
+    const res = document.querySelector(`.proxy-res[data-pres="${site}"]`);
+    let val = site ? document.querySelector(`.s-proxy-site[data-site="${site}"]`).value.trim() : "";
+    if (!val) val = $("s-proxy-default").value.trim();
+    if (val.toLowerCase() === "direct") val = "";
+    res.className = "proxy-res";
+    res.textContent = "Testing…";
+    btn.disabled = true;
+    try {
+      const r = await API.proxy_test(site, val);
+      res.className = "proxy-res " + (r.ok ? "ok" : "bad");
+      res.textContent = (r.ok ? "✓ " : "✕ ") + r.message;
+    } catch (e) {
+      res.className = "proxy-res bad";
+      res.textContent = "✕ Test failed.";
+    }
+    btn.disabled = false;
+  });
 });
 
 async function runSystemCheck() {

@@ -6,6 +6,33 @@ in the repository, and each version is also a
 
 ---
 
+## V2.8 — 2026‑10‑03
+
+**Proxy support — because Chaturbate can now refuse a whole network.** Since
+the night of 2026‑10‑02, Chaturbate's video servers started refusing every
+video request from some internet providers (seen from a Dominican ISP), over
+both connection types. The streams resolve, then every video request is
+answered with `403 Forbidden` and nothing records. Chaturbate's own website
+shows it too: its player falls back to a slow slideshow of still images.
+
+This is different from V2.6 and V2.7. Those were the servers refusing one
+connection type, which Scr33nX can switch around on its own. This time the
+whole network is refused no matter what Scr33nX sends, while the same stream
+plays fine through a VPN or Cloudflare WARP. So the fix is to reach Chaturbate
+from a different address.
+
+**Added**
+- **Settings → 🌐 Proxy.** Send Scr33nX's traffic for a site through a
+  SOCKS5/HTTP proxy — one default for everything, or one per site (Chaturbate,
+  Stripchat, Camsoda, MyFreeCams), or `direct` to opt a site out. Each row has
+  a **Test** button. Only Scr33nX's traffic for that site is affected; the
+  rest of your PC is untouched. Free option: Cloudflare WARP in proxy mode —
+  see [[Settings]].
+- New dependency `PySocks` — run `pip install -r requirements.txt` after
+  updating.
+
+---
+
 ## V2.7 — 2026‑10‑02
 
 **Chaturbate fix AGAIN!** Chaturbate changed its connection rules a second
