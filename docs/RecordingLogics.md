@@ -160,7 +160,7 @@ sites keep the default dual-stack session.
 
 ### Chaturbate edges can also refuse a whole network (2026-10-03)
 
-A third, different break: from a Dominican ISP (Claro) **every** edge request
+A third, different break: from one residential ISP **every** edge request
 403'd over **both** IPv4 and IPv6 — mint × fetch family matrix all 403, with
 every header set (UA/Referer/Origin/full Chrome/ffmpeg/VLC), a cookie-warmed
 session, Chrome's TLS fingerprint (curl_cffi), other URL shapes and other edge

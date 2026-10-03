@@ -18,8 +18,8 @@ grouped by date / milestone.
 
 **What's happening with Chaturbate.** Since the night of 2026‑10‑02,
 Chaturbate's video servers (the "edges") started refusing *every* video
-request from some internet providers — we saw it from a Dominican ISP
-(Claro), over both IPv4 and IPv6. The symptoms look like the V2.6/V2.7
+request from some internet providers — we saw it on a home connection,
+over both IPv4 and IPv6. The symptoms look like the V2.6/V2.7
 problems: the model resolves ("url ok"), then every playlist answers
 `403 Forbidden`, Player tiles show `manifestLoadError`, and nothing records.
 Chaturbate's own website shows it too — its player gives up on video and falls
