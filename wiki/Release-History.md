@@ -10,7 +10,7 @@ in the repository, and each version is also a
 
 **Proxy support — because Chaturbate can now refuse a whole network.** Since
 the night of 2026‑10‑02, Chaturbate's video servers started refusing every
-video request from some internet providers (seen on a home connection), over
+video request from some networks, over
 both connection types. The streams resolve, then every video request is
 answered with `403 Forbidden` and nothing records. Chaturbate's own website
 shows it too: its player falls back to a slow slideshow of still images.

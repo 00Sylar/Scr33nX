@@ -19,7 +19,7 @@
 |---|---|
 | Streams drop segments / ⚠ warnings | Your total bandwidth is the limit (~5–6 Mbps per 1080p stream). Set a global **Max Quality** cap (720p ≈ half the usage), enable **⬇ Auto‑Downgrade**, or record fewer models at once. |
 | Recording quality changed mid‑stream | Shouldn't happen — the relay pins the top variant within your cap. If it does, capture the log and the model/site. |
-| Chaturbate: model resolves but nothing records, every playlist 403s (Player: `manifestLoadError`), and Chaturbate's own site shows a slow slideshow instead of video | Chaturbate's video servers are refusing your whole network/ISP (not something Scr33nX sends). It plays through a VPN or Cloudflare WARP. Set a proxy for Chaturbate in [[Settings]] → 🌐 Proxy (e.g. WARP proxy mode, `socks5h://127.0.0.1:40000`) and press **Test**. |
+| Chaturbate: model resolves but nothing records, every playlist 403s (Player: `manifestLoadError`), and Chaturbate's own site shows a slow slideshow instead of video | Chaturbate's video servers are refusing your whole network (not something Scr33nX sends). It plays through a VPN or Cloudflare WARP. Set a proxy for Chaturbate in [[Settings]] → 🌐 Proxy (e.g. WARP proxy mode, `socks5h://127.0.0.1:40000`) and press **Test**. |
 | Stripchat won't record | If **Browser Fallback** is off and the native path fails, the stream is skipped by design. Enable the fallback in [[Settings]] (needs `playwright install chromium`). |
 | Bandwidth meter shows nothing for a Stripchat recording | The Playwright browser fallback doesn't pass through the relay, so it isn't counted. That's expected. |
 | `.ts` won't play | Use VLC/MPV, or convert: `ffmpeg -i input.ts -c copy output.mp4`. |

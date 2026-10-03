@@ -16,10 +16,9 @@ grouped by date / milestone.
 
 **Proxy support — because Chaturbate can now refuse a whole network.**
 
-**What's happening with Chaturbate.** Since the night of 2026‑10‑02,
-Chaturbate's video servers (the "edges") started refusing *every* video
-request from some internet providers — we saw it on a home connection,
-over both IPv4 and IPv6. The symptoms look like the V2.6/V2.7
+**What's happening with Chaturbate.** Since 2026‑10‑02, Chaturbate's video
+servers (the "edges") have started refusing *every* video request from some
+networks — over both IPv4 and IPv6. The symptoms look like the V2.6/V2.7
 problems: the model resolves ("url ok"), then every playlist answers
 `403 Forbidden`, Player tiles show `manifestLoadError`, and nothing records.
 Chaturbate's own website shows it too — its player gives up on video and falls
@@ -28,40 +27,38 @@ back to a slow, low‑frame‑rate slideshow of still images.
 This is a **different** break from V2.6/V2.7. Those were the servers refusing
 one connection type (IPv6, then IPv4), which Scr33nX can detect and switch
 around. This time the servers refuse the *whole network*, whatever Scr33nX
-sends: we tried every header set, cookies, a Chrome‑identical TLS fingerprint,
-other URL shapes and other server hostnames, and the website's own video
-endpoint — all 403. The same room played perfectly through a VPN with a US
-exit (the server you get follows your IP's location; the VPN reached Chicago
-instead of Atlanta) and through Cloudflare WARP. So nothing in how Scr33nX asks
-can fix it; the only way around is to reach Chaturbate from a different network
-address — which is what the new proxy setting is for.
+sends: every header set, cookies, a browser‑identical TLS fingerprint, other
+URL shapes and server hostnames, and the website's own video endpoint all get
+the same 403. The same streams play fine when the request comes from a
+different network address — for example through a VPN or Cloudflare WARP —
+because the video server you're assigned follows your IP's location. So
+nothing in how Scr33nX asks can fix it; the only way around is to reach
+Chaturbate from a different network address, which is what the new proxy
+setting is for.
 
 ### Added
-- **Proxy support (Settings → 🌐 Proxy).** If a site refuses your network —
-  for example Chaturbate answering 403 to your whole ISP, while it plays fine
-  through a VPN — you can now send just Scr33nX's traffic for that site through
-  a SOCKS5/HTTP proxy, without touching the rest of your PC. Set a **default
+- **Proxy support (Settings → 🌐 Proxy).** If a site refuses your network, you
+  can now send just Scr33nX's traffic for that site through a SOCKS5/HTTP
+  proxy, without changing anything else on your computer. Set a **default
   proxy** for every site, or one per site (Chaturbate, Stripchat, Camsoda,
   MyFreeCams), or `direct` to opt a site out. Each row has a **Test** button
   that shows where the proxy exits and whether Chaturbate's video servers
-  accept it. Handy free option: Cloudflare WARP in proxy mode
-  (`warp-cli mode proxy`, then `socks5h://127.0.0.1:40000`). Chaturbate's
-  room lookups stay direct; only its video goes through the proxy.
+  accept it. Chaturbate's room lookups stay direct; only its video goes
+  through the proxy.
+- **How to use it.** Install a proxy or VPN that exposes a SOCKS5/HTTP
+  address. A free option is **Cloudflare WARP**: install it, run
+  `warp-cli mode proxy` and `warp-cli connect`, then in Scr33nX open
+  **Settings → 🌐 Proxy**, enter WARP's proxy address (it listens on port
+  40000 of the same computer) in the **Chaturbate** row, press **Test** (it
+  should say the video servers accept the connection), then **Save**. In proxy
+  mode only the video Scr33nX sends through it uses WARP; everything else on
+  the computer is untouched. A recording that's already running keeps its old
+  route until it restarts.
+- **Proxy speed matters.** All of that site's video flows through the proxy,
+  so a slow proxy means dropped segments (about 5 Mbps per 1080p stream).
+  Check the proxy's speed before relying on it for many streams.
 - New dependency: `PySocks` (SOCKS proxy support) — run
   `pip install -r requirements.txt` after updating.
-- **How to use it.** Install a proxy or VPN that exposes a SOCKS5/HTTP address.
-  The free route: install **Cloudflare WARP** (1.1.1.1), then in a terminal run
-  `warp-cli mode proxy` and `warp-cli connect` (if `warp-cli` isn't found, use
-  `"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"`). In Scr33nX
-  open **Settings → 🌐 Proxy**, put `socks5h://127.0.0.1:40000` in the
-  **Chaturbate** row, press **Test** (it should say the video servers accept
-  the connection), then **Save**. In proxy mode only Scr33nX's Chaturbate video
-  uses WARP — the rest of your PC, local servers and VPNs like Tailscale are
-  untouched. A recording that's already running keeps its old route until it
-  restarts.
-- Proxy speed matters: all of that site's video flows through the proxy, so a
-  slow proxy means dropped segments (about 5 Mbps per 1080p stream). Check the
-  proxy's speed before relying on it for many streams.
 
 ---
 

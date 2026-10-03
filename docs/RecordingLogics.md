@@ -160,16 +160,15 @@ sites keep the default dual-stack session.
 
 ### Chaturbate edges can also refuse a whole network (2026-10-03)
 
-A third, different break: from one residential ISP **every** edge request
-403'd over **both** IPv4 and IPv6 — mint × fetch family matrix all 403, with
-every header set (UA/Referer/Origin/full Chrome/ffmpeg/VLC), a cookie-warmed
-session, Chrome's TLS fingerprint (curl_cffi), other URL shapes and other edge
-hosts. The site's own `get_edge_hls_url_ajax/` returned a URL that 403'd too,
-and the browser fell back to Chaturbate's JPEG-snapshot stream (`stream?room=…`)
-instead of HLS. Through a VPN with a US exit the same room played HLS from
-`edge29-chi` (Chicago) — the edge region follows the client IP — and through
-Cloudflare WARP the Atlanta edges answered 200. So the edge was refusing that
-ISP's address ranges: nothing in the request chain can fix it.
+A third, different break: from some networks **every** edge request 403s over
+**both** IPv4 and IPv6 — the mint × fetch family matrix is all 403, whatever
+the headers (UA/Referer/Origin/full Chrome/ffmpeg/VLC), a cookie-warmed
+session, Chrome's TLS fingerprint (curl_cffi), other URL shapes or other edge
+hosts. The site's own `get_edge_hls_url_ajax/` returns a URL that 403s too, and
+the browser falls back to Chaturbate's JPEG-snapshot stream (`stream?room=…`)
+instead of HLS. From a different network address (a VPN, Cloudflare WARP) the
+same room plays HLS — the edge region follows the client IP. So the edge
+refuses that network's address ranges: nothing in the request chain can fix it.
 
 The answer is the per-site **proxy** (`netproxy.py`, Settings → Proxy). With a
 proxy set for `chaturbate`, `cb_relay._get` fetches via that proxy through the
@@ -546,7 +545,7 @@ cached video state so the recorder can show `PRIVATE` without a second round-tri
 |---|---|---|
 | CB statuses stop updating / `[CB] throttled` in the log | Cloudflare rate-limit; the pacer is backing off (statuses are kept, not flipped OFFLINE) | `_cb_get` / `_CB_BASE_INTERVAL`; raise the base spacing if it recurs |
 | CB resolves ("url ok") but every playlist 403s / `manifestLoadError` | Edge refusing the IP family in use (it has flipped before); the relay should auto-switch | §1 "Chaturbate edges are gated by IP family"; `cb_relay._cb_edge_get`; look for the `Chaturbate edges now reached over …` log line. If both families 403, the cause is something else (headers/token) — probe with `requests` over each family |
-| CB resolves but every playlist 403s on **both** IP families, and the browser shows slow JPEG instead of video | The edge refuses your whole network/ISP (not the family) | §1 "…can also refuse a whole network"; set a proxy for Chaturbate in Settings → Proxy (e.g. WARP proxy mode `socks5h://127.0.0.1:40000`) and press **Test** |
+| CB resolves but every playlist 403s on **both** IP families, and the browser shows slow JPEG instead of video | The edge refuses your whole network (not the family) | §1 "…can also refuse a whole network"; set a proxy for Chaturbate in Settings → Proxy (e.g. WARP proxy mode `socks5h://127.0.0.1:40000`) and press **Test** |
 | Stripchat won't record, no browser opens | MOUFLON keys rotated; should fall back | `stripchat_native.resolve` returns None → check Playwright |
 | Stripchat records but bandwidth meter ignores it | On Playwright fallback (expected — bypasses relay) | `launch_stripchat_playwright` |
 | Camsoda "extension not whitelisted" | Relay extension-normalize regressed | `_wrap_url` (.m4s) + `-allowed_extensions ALL` |
