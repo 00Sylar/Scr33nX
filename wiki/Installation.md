@@ -31,6 +31,9 @@ playwright install chromium
 `playwright install chromium` is **only** required for the Stripchat browser
 fallback — skip it if you don't record Stripchat.
 
+If you update from an older version, run `pip install -r requirements.txt`
+again — V2.8 added `PySocks` (SOCKS proxy support for **Settings → Proxy**).
+
 ## 4. Run the app
 
 Double‑click **`Scr33nX.bat`** — it launches the GUI with no console window.

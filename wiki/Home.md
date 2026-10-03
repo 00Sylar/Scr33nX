@@ -58,6 +58,8 @@ Everything in this wiki applies to both — only the look differs. See
 - **Python 3.10+** (add to PATH during install)
 - **ffmpeg**
 - **Playwright Chromium** — only for the Stripchat browser fallback
+- **A proxy / VPN** — optional; only if a site refuses your network (see
+  [[Settings]] → 🌐 Proxy)
 
 > The canonical, code‑level documentation lives in the repository: `README.md`,
 > `docs/RecordingLogics.md`, `docs/OPENCLAW-HOWTO.md`, `docs/CONTRIBUTING.md`, and `docs/CHANGELOG.md`.

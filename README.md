@@ -17,6 +17,7 @@ Recordings are pulled through a local smart relay that prefetches HLS segments i
 - ✅ **Parallel segment prefetching** — segments are downloaded ahead of ffmpeg in parallel (64 shared workers); slow streams catch up instead of skipping 1–2 s chunks — built for dozens of concurrent recordings
 - ✅ **File splitting** — automatically starts a new file when the recording reaches your defined max size (e.g. 3070 MB)
 - ✅ Stripchat records browserless (native MOUFLON path) when possible, with automatic Playwright/Chromium fallback
+- ✅ **Per-site proxy (optional)** — if a site's video servers refuse your network (e.g. Chaturbate answering **403** to every request), route just that site's traffic through a SOCKS5/HTTP proxy such as Cloudflare WARP in proxy mode; one default proxy or one per site, with a **Test** button (**⚙ Settings → 🌐 Proxy**)
 
 ### Monitoring & UI
 - ✅ Modern black & red UI — a native window (Windows WebView2, no browser involved) with smooth animations, shadows, drag-rectangle multi-select, and collapsible per-site groups. The previous Tk interface is still available (see *Two interfaces* below)
@@ -264,6 +265,7 @@ A command-line helper, **`src/scr33nx_ctl.py`**, wraps all of these (plus `open`
   - survives the CDN's mid-segment TLS resets that corrupt direct ffmpeg downloads,
   - detects segments that expired before they could be downloaded and reports them (Activity Log + optional notification),
   - feeds the **bandwidth meter** (counts every byte fetched upstream).
+- **Proxy** (`src/netproxy.py`): per-site, optional. When set, the relay fetches that site's video through the proxy (for Chaturbate this replaces the IPv4/IPv6 fallback — the proxy picks the route; Chaturbate's room lookups stay direct). The other sites' lookups, the MFC websocket and the Stripchat browser fallback use theirs too. Local traffic (relay, control API) is never proxied. See **Proxy** under Settings and the *refused network* section of [RecordingLogics.md](docs/RecordingLogics.md)
 - **Chaturbate / Camsoda**: public HLS resolver → relay → `ffmpeg -c copy`
 - **MyFreeCams**: no public API — a guest login over MFC's FCS websocket (`src/mfc.py`) resolves the model's video state + HLS edge, then relay → `ffmpeg -c copy`
 - **Stripchat**: native MOUFLON-decrypting path through the relay (no browser) when possible; otherwise a Playwright-driven Chromium session (`src/stripchat_live.py`) writes the MPEG-TS directly. *Note: the browser fallback doesn't pass through the relay, so it isn't counted by the bandwidth meter.*

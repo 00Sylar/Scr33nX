@@ -21,6 +21,11 @@
   hits your Max File Size (e.g. 3070 MB).
 - **Stripchat native path** — records browserless (MOUFLON) when possible, with
   automatic Playwright/Chromium fallback.
+- **Per‑site proxy (optional)** — if a site's video servers refuse your network
+  (e.g. Chaturbate answering 403 to every request), route just that site's
+  traffic through a SOCKS5/HTTP proxy such as Cloudflare WARP in proxy mode.
+  One default proxy or one per site, with a **Test** button. See [[Settings]]
+  → 🌐 Proxy.
 
 See [[Recording Internals|Recording-Internals]] for how all of this works.
 
