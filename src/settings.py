@@ -72,6 +72,10 @@ class AppSettings:
     preview_engine: str = "auto"               # "auto" | "mpv" | "vlc"
     preview_player_path: str = ""              # optional override path to mpv.exe/vlc.exe (empty = auto-detect)
     max_player_tiles: int = 9                  # Player tab: cap on simultaneously open (and streaming) tiles
+    player_quality: int = 0                    # Player tab tile video cap: variant height px (0 = Max)
+    dl_limit_mbps: float = 0.0                 # download speed cap for all stream traffic, Mbps (0 = unlimited)
+    ul_limit_mbps: float = 0.0                 # Telegram upload speed cap across all workers, Mbps (0 = unlimited)
+    gpu_flags: bool = False                    # experimental: extra Chromium GPU/rendering flags for the web view (needs restart)
     api_token: str = ""                        # local API shared secret ("" = no auth, default)
     proxy_default: str = ""                    # outbound proxy for every site without its own ("" = direct)
     proxies: dict = None                       # {"chaturbate": "socks5h://host:port" | "direct", ...} per-site override
@@ -254,6 +258,16 @@ def load_settings() -> AppSettings:
     s.preview_engine = main.get("preview_engine", s.preview_engine)
     s.preview_player_path = main.get("preview_player_path", s.preview_player_path)
     s.max_player_tiles = max(1, min(100, int(main.get("max_player_tiles", s.max_player_tiles) or s.max_player_tiles)))
+    try:
+        s.player_quality = int(main.get("player_quality", s.player_quality) or 0)
+    except (TypeError, ValueError):
+        s.player_quality = 0
+    for f in ("dl_limit_mbps", "ul_limit_mbps"):
+        try:
+            setattr(s, f, max(0.0, float(main.get(f, 0) or 0)))
+        except (TypeError, ValueError):
+            setattr(s, f, 0.0)
+    s.gpu_flags = bool(main.get("gpu_flags", s.gpu_flags))
     s.api_token = str(main.get("api_token", "") or "")
     s.proxy_default = str(main.get("proxy_default", "") or "")
     s.proxies = {str(k): str(v) for k, v in (main.get("proxies") or {}).items()
@@ -315,6 +329,10 @@ def save_settings(s: AppSettings):
         "preview_engine": s.preview_engine,
         "preview_player_path": s.preview_player_path,
         "max_player_tiles": s.max_player_tiles,
+        "player_quality": s.player_quality,
+        "dl_limit_mbps": s.dl_limit_mbps,
+        "ul_limit_mbps": s.ul_limit_mbps,
+        "gpu_flags": s.gpu_flags,
         "api_token": s.api_token,
         "proxy_default": s.proxy_default,
         "proxies": s.proxies,

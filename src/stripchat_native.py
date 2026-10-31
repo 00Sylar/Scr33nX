@@ -219,26 +219,39 @@ def stream_id(model_name: str, max_age: float = 0.0) -> Optional[str]:
     return info.get("stream_id")
 
 
-def _pick_variant(master: str) -> Optional[str]:
-    """Highest-BANDWIDTH variant URL from the master playlist."""
-    best_url, best_bw = None, -1
+def _pick_variant(master: str, max_height: int = 0) -> Optional[str]:
+    """Highest-BANDWIDTH variant URL from the master playlist. With
+    `max_height` set, the best variant whose RESOLUTION height fits the cap
+    (the smallest one if none does; no cap when no variant declares a size)."""
+    cands = []  # (bandwidth, height — 0 if undeclared, url)
     lines = master.splitlines()
     for i, line in enumerate(lines):
         if line.startswith("#EXT-X-STREAM-INF"):
             mbw = re.search(r"BANDWIDTH=(\d+)", line)
             bw = int(mbw.group(1)) if mbw else 0
+            mh = re.search(r"RESOLUTION=\d+x(\d+)", line)
+            h = int(mh.group(1)) if mh else 0
             url = lines[i + 1].strip() if i + 1 < len(lines) else ""
-            if url and not url.startswith("#") and bw > best_bw:
-                best_url, best_bw = url, bw
-    return best_url
+            if url and not url.startswith("#"):
+                cands.append((bw, h, url))
+    if not cands:
+        return None
+    if max_height > 0 and any(c[1] > 0 for c in cands):
+        sized = [c for c in cands if c[1] > 0]
+        cands = [c for c in sized if c[1] <= max_height] \
+            or [min(sized, key=lambda c: c[1])]
+    return max(cands, key=lambda c: c[0])[2]
 
 
-def resolve(model_name: str, max_age: float = 0.0) -> Optional[str]:
+def resolve(model_name: str, max_age: float = 0.0,
+            max_height: int = 0) -> Optional[str]:
     """Return a keyed, single-quality Stripchat variant URL ready for the relay,
     or None if the model isn't publicly live / no known key matches / only an
     advert loop is being served (caller should fall back to Playwright).
 
-    See page_info() for `max_age`."""
+    See page_info() for `max_age`. `max_height` caps the variant's height in
+    pixels (0 = the best one) — Player tiles use it to pull a lighter stream.
+    """
     sid = stream_id(model_name, max_age=max_age)
     if not sid:
         return None
@@ -256,7 +269,7 @@ def resolve(model_name: str, max_age: float = 0.0) -> Optional[str]:
     if not key_id:
         return None  # keys rotated — fall back to browser method
 
-    variant = _pick_variant(master)
+    variant = _pick_variant(master, max_height)
     if not variant:
         return None
     sep = "&" if "?" in variant else "?"

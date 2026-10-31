@@ -71,6 +71,19 @@ fetches upstream using Python's `requests`. This solves four problems at once:
    relay already knows upcoming segment URLs (it rewrote the playlist), so it
    prefetches them with **64 worker threads** into an in-memory cache and serves
    ffmpeg instantly.
+3b. **Player tiles share the relay (cache rules)** — a Player tile is wrapped
+   with its own label `tile@<max-height>:site:model`, so its variant cap rides in
+   the label (Max = 0) and its gap accounting / auto-downgrade never touch the
+   recording of the same model. While any tile has polled a playlist in the
+   last 10 s, a served segment stays cached for `_SERVED_RETAIN` (8 s) so the
+   tile and ffmpeg share one download (otherwise the first consumer deleted
+   it and the second re-downloaded it); with no tiles open the old
+   drop-after-serving behaviour is unchanged. Tile prefetch uses its own
+   6-worker pool, only the newest 3 segments of a playlist, and only while the
+   cache is under 60 % of the cap. When the cache does hit `_CACHE_MAX_BYTES`
+   the relay evicts served segments first, then the oldest unserved, instead of
+   suspending prefetch (suspended prefetch made *every* recording fall behind
+   at once).
 4. **Bandwidth metering + drop detection** — every byte fetched upstream is
    counted (`bytes_downloaded()` drives the `↓ Mbps` meter). Segments that
    expire from the playlist before they could be fetched are reported via a gap
@@ -88,7 +101,9 @@ validated at ~50 concurrent recordings:
 |---|---|---|
 | `_PREFETCH_WORKERS` | 64 | ~N/2 downloads/s for N≈50 streams with headroom |
 | prefetch fetch budget | 2 tries, 5 s connect / 10 s read | a live segment only exists ~10–20 s; fail fast, next playlist refresh retries |
-| `_CACHE_MAX_BYTES` | 768 MB | 300 MB silently disabled prefetching at high N; a warning now logs if the cap is hit |
+| `_CACHE_MAX_BYTES` | 768 MB | 300 MB silently disabled prefetching at high N; at the cap, served segments are evicted first (prefetch is no longer switched off) and a warning logs |
+| `_SERVED_RETAIN` | 8 s (only while tiles are open) | lets a tile and ffmpeg share one segment download |
+| `_TILE_PREFETCH_WORKERS` | 6 | tiles never take workers from the 64 recording workers |
 | HTTP pool | 32 hosts / 128 connections | workers must never block on a free connection |
 | `request_queue_size` | 128 | listen-backlog default of 5 refused bursts of ffmpeg connections (ffmpeg "Error number -138") |
 
@@ -569,6 +584,21 @@ is the bottleneck. Remedies, in order: set a global **Max Quality** cap
 the streams that can't keep up lose quality (§1b), or record fewer models at
 once. The `↓ Mbps` header meter shows Scr33nX's total upstream download
 traffic (relay-routed sites only).
+
+**Speed limits** (`src/ratelimit.py`, Settings → 🚦 Speed limits, Mbps, 0 =
+off). *Download:* one shared token bucket paces every segment byte the relay
+pulls — the prefetch workers switch to chunked (`stream=True`) reads while a
+cap is set so it paces the actual transfer, and the cache-miss passthrough
+consumes per chunk too. Playlists are never throttled. Waits are reserved
+under the lock and slept outside it, with at most ~1 s of carry-over, so the
+64 prefetch workers queue fairly instead of bursting. A cap below the sum of
+the live streams' bitrates *will* drop segments — live HLS can't be slowed.
+*Upload:* TDLib has no speed option, so while a cap is set each TDLib client
+is pointed (`addProxy`) at a local SOCKS5 proxy on 127.0.0.1 that throttles
+only the client → Telegram direction through a second shared bucket. Stale
+127.0.0.1 proxy entries are removed from TDLib's database on every connect;
+turning the cap on/off re-routes connected clients, a changed value applies
+live.
 
 ## 6. Beta logging
 

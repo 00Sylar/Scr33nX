@@ -57,9 +57,9 @@ See [[Recording Internals|Recording-Internals]] for how all of this works.
   Auto‑Record without leaving the Player (dimmed until the model is in the
   Recorder, since Auto‑Record only applies there; Theater tile only, grid
   tiles stay clean), the rest in a Bottom/Side thumbnail
-  strip, still playing). Add tiles via **+ Add Tile** or right‑click an
-  online/recording model → **▶ Add to Player**. Tiles start streaming the
-  moment they're added and keep streaming while other tabs are in front, so
+  strip, still playing). Add tiles via **+ Add Tile** or right‑click any
+  model (any status) → **▶ Add to Player**. Tiles of live models start streaming the
+  moment they're added (offline ones start when the model goes live) and keep streaming while other tabs are in front, so
   returning to the Player never reloads them; the Grid scrolls when tiles
   overflow the window, **★ Fill Top Ranked** opens tiles for your
   highest‑ranked models that are online right now (best rank first, up to

@@ -36,8 +36,17 @@ function lnkLabel(k) {
 /* Live status of a "site:name" key across the Recorder and the Saved
    scanner (saved_status only ships non-offline models, so a recording
    alias is always resolvable). */
+/* O(1) lookup into the Recorder snapshot (rebuilt once per tick — S.models is
+   a fresh array every poll). The per-tile/per-row .find() scans were O(N²). */
+let _mIdxFor = null, _mIdx = new Map();
+function modelByKey(key) {
+  const ms = S && S.models;
+  if (!ms) return undefined;
+  if (_mIdxFor !== ms) { _mIdxFor = ms; _mIdx = new Map(ms.map(m => [m.key, m])); }
+  return _mIdx.get(key);
+}
 function liveStatusOfKey(key) {
-  const m = (S && S.models || []).find(x => x.key === key);
+  const m = modelByKey(key);
   if (m) return m.status;
   const sv = S && S.saved_status && S.saved_status[`saved:${key}`];
   return sv ? sv[0] : "offline";
@@ -45,7 +54,7 @@ function liveStatusOfKey(key) {
 /* aka list for any tracked model — Recorder row or Saved item. */
 function akaOf(name, site) {
   const lower = String(name).toLowerCase();
-  const m = (S && S.models || []).find(x => x.key === `${site}:${lower}`);
+  const m = modelByKey(`${site}:${lower}`);
   if (m) return m.aka || [];
   const it = savedCache.items.find(x => x.site === site && x.name.toLowerCase() === lower);
   return (it && it.aka) || [];
@@ -56,7 +65,7 @@ function linkedState(aka) {
   const out = { rec: [], dup: [] };
   for (const k of aka || []) {
     if (liveStatusOfKey(k) === "recording") out.rec.push(k);
-    if (S && (S.models || []).some(x => x.key === k)) out.dup.push(k);
+    if (modelByKey(k)) out.dup.push(k);
   }
   return out;
 }
@@ -155,11 +164,29 @@ function start() {
   tick();
   setInterval(tick, 1000);
 }
+// Poll cadence: 1 s while the window is shown; ~3 s while hidden/minimized
+// (the interval keeps firing at 1 s, tick() just skips until 3 s have passed).
+// Becoming visible again polls immediately.
+let lastTickAt = 0;
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") tick();
+});
+// Visible tab id ("recorder"/"saved"/"player"/"output"/"log"/"settings").
+// Per-tick renders for the other tabs are skipped; the tab-click handler
+// paints the tab fresh the moment it becomes active.
+let activeTab = "recorder";
+// Write only when the value changed (avoids pointless DOM mutations).
+function setTxtId(id, v) {
+  const el = $(id);
+  if (el.textContent !== v) el.textContent = v;
+}
 window.addEventListener("pywebviewready", start);
 document.addEventListener("DOMContentLoaded", () => setTimeout(start, 400));
 
 async function tick() {
   if (!API || fetching) return;
+  if (document.visibilityState === "hidden" && Date.now() - lastTickAt < 2900) return;
+  lastTickAt = Date.now();
   fetching = true;
   try {
     const s = await API.state(logSeq, pipeSeq);
@@ -171,41 +198,47 @@ async function tick() {
 
 /* ══ top-level render ══ */
 function render(s) {
-  $("ver").textContent = "v" + s.version;
+  setTxtId("ver", "v" + s.version);
   const up = $("update-pill");
-  if (s.update) { up.hidden = false; up.textContent = `● Update available (${s.update})`; }
+  if (s.update) { up.hidden = false; setTxtId("update-pill", `● Update available (${s.update})`); }
   $("lowdisk-pill").hidden = !s.low_disk;
-  $("m-down").textContent = s.meters.down.toFixed(1);
-  $("m-up").textContent = s.meters.up.toFixed(1);
+  setTxtId("m-down", s.meters.down.toFixed(1));
+  setTxtId("m-up", s.meters.up.toFixed(1));
 
   const r = s.monitoring.recorder, v = s.monitoring.saved;
-  $("hdr-status").textContent = r && v ? "MONITORING (R+S)" : r ? "RECORDER ACTIVE"
-                              : v ? "SCANNER ACTIVE" : "IDLE";
+  setTxtId("hdr-status", r && v ? "MONITORING (R+S)" : r ? "RECORDER ACTIVE"
+                         : v ? "SCANNER ACTIVE" : "IDLE");
   $("hdr-dot").style.background = (r || v) ? "var(--go-bright)" : "var(--text-3)";
 
   setToggleBtn($("btn-monitor"), r, "▶ Start Monitor", "⏹ Stop Monitor");
   setToggleBtn($("btn-scanner"), v, "▶ Start Scanner", "⏹ Stop Scanner");
 
-  renderDash(s.dash);
-  renderRec(s.models);
+  // Recorder table + dashboard only paint while the Recorder tab is showing;
+  // the tab-click handler paints them immediately on switch.
+  if (activeTab === "recorder") {
+    renderDash(s.dash);
+    renderRec(s.models);
+  }
   renderSaved();
   patchPlayerStatuses();
   patchPreviewControls();
   renderLog(s.log, s.log_seq);
   renderPipe(s.pipe);
-  $("saved-count").textContent = `${s.saved_count.toLocaleString()} model(s)`;
+  setTxtId("saved-count", `${s.saved_count.toLocaleString()} model(s)`);
   privacyApply(s.privacy);
 }
 
 function setToggleBtn(btn, on, offText, onText) {
-  btn.textContent = on ? onText : offText;
+  const t = on ? onText : offText;
+  if (btn.textContent !== t) btn.textContent = t;
   btn.classList.toggle("go", !on);
   btn.classList.toggle("stop", on);
 }
 
+let _dashHtml = "";
 function renderDash(d) {
-  $("dash-live").textContent = `${d.all.recording} LIVE`;
-  $("dash-total").textContent = `${d.all.total} models`;
+  setTxtId("dash-live", `${d.all.recording} LIVE`);
+  setTxtId("dash-total", `${d.all.total} models`);
   let html = "";
   for (const [chip, c] of Object.entries(d.sites)) {
     if (!c.total) continue;
@@ -223,7 +256,7 @@ function renderDash(d) {
       <span class="c ${d.all.recording ? "rec" : "dim"}">${d.all.recording}</span>
       <span class="c ${d.all.online ? "on" : "dim"}">${d.all.online}</span>
       <span class="c off">${d.all.offline}</span></div>`;
-  $("dash-rows").innerHTML = html;
+  if (html !== _dashHtml) { _dashHtml = html; $("dash-rows").innerHTML = html; }
 }
 
 /* ══ recorder table ══ */
@@ -312,6 +345,14 @@ function renderRec(models) {
   for (const [key, el] of rowEls) {
     const m = byKey.get(key);
     if (!m) continue;
+    // Per-row signature: untouched rows cost one string compare per tick.
+    // (A row's cached sig is dropped by the click handlers that edit the DOM
+    // optimistically, so the next tick re-syncs it from the snapshot.)
+    const wantLnk = lnkHtml(m.aka, m.status);
+    const rsig = `${m.status}|${m.file}|${m.size}|${m.auto ? 1 : 0}|${m.rank}|${m.saved ? 1 : 0}|`
+      + `${sel.rec.has(key) ? 1 : 0}|${checked.rec.has(key) ? 1 : 0}|${wantLnk}`;
+    if (el._sig === rsig) continue;
+    el._sig = rsig;
     el.classList.toggle("recording", m.status === "recording");
     el.classList.toggle("selected", sel.rec.has(key));
     const st = el.querySelector(".st");
@@ -327,7 +368,6 @@ function renderRec(models) {
     }
     // 🔗 marker follows link/status changes without waiting for a rebuild
     const nameEl = el.querySelector(".name");
-    const wantLnk = lnkHtml(m.aka, m.status);
     if (nameEl.dataset.lnk !== wantLnk) {
       nameEl.dataset.lnk = wantLnk;
       nameEl.innerHTML = `${esc(m.name)}${wantLnk}`;
@@ -396,12 +436,16 @@ function rebuildSavedDisplay() {
     savedDisplay.push({ head: site, count: list.length });
     if (!collapsed.saved.has(site)) savedDisplay.push(...list);
   }
-  $("saved-viewport").style.height = (savedDisplay.length * ROW_H) + "px";
+  const vh = (savedDisplay.length * ROW_H) + "px";
+  if ($("saved-viewport").style.height !== vh) $("saved-viewport").style.height = vh;
   renderSavedWindow();
 }
 
 function renderSaved() {
+  // The list cache is refreshed every tick (other tabs read it for ranks /
+  // aliases) but the table itself is only rebuilt while the tab is showing.
   ensureSavedList();
+  if (activeTab !== "saved") return;
   rebuildSavedDisplay();      // statuses may have changed this tick
 }
 
@@ -438,7 +482,8 @@ function renderSavedWindow() {
       html += savedRowHtml(it, top);
     }
   }
-  vp.innerHTML = html;
+  // Identical window → leave the DOM alone (keeps hover/tooltips, no reflow).
+  if (html !== vp._lastHtml) { vp._lastHtml = html; vp.innerHTML = html; }
 }
 $("saved-wrap").addEventListener("scroll", () => requestAnimationFrame(renderSavedWindow));
 
@@ -460,7 +505,15 @@ function appendLog(pane, entries) {
 }
 
 /* ══ pipeline ══ */
+let _pipeSig = "";
 function renderPipe(p) {
+  // Log entries are incremental (seq-based) so they always append; the state
+  // widgets are only repainted when something in them changed.
+  appendLog($("pipe-log"), p.log);
+  pipeSeq = p.log_seq;
+  const psig = `${p.running}|${p.state}|${p.convert}|${p.upload}|${p.lines.join("\n")}`;
+  if (psig === _pipeSig) return;
+  _pipeSig = psig;
   const btn = $("b-pipe");
   btn.textContent = p.running ? "⏹ Stop Pipeline" : "▶ Start Pipeline";
   btn.classList.toggle("go", !p.running);
@@ -481,8 +534,6 @@ function renderPipe(p) {
   $("stage-convert").classList.toggle("on", p.convert);
   $("stage-upload").classList.toggle("on", p.upload);
   $("pipe-lines").textContent = p.lines.join("\n");
-  appendLog($("pipe-log"), p.log);
-  pipeSeq = p.log_seq;
 }
 
 let pipeLoaded = false;
@@ -643,12 +694,17 @@ async function loadSettings() {
   $("s-pengine").value = s.preview_engine;
   $("s-ppath").value = s.preview_player_path;
   $("s-player-max").value = s.max_player_tiles;
+  setSwitch("s-gpu", s.gpu_flags);
+  $("s-dl-limit").value = s.dl_limit_mbps || 0;
+  $("s-ul-limit").value = s.ul_limit_mbps || 0;
+  updateLimitHint();
   $("s-api-token").value = s.api_token || "";
   $("s-proxy-default").value = s.proxy_default || "";
   document.querySelectorAll(".s-proxy-site").forEach(i => {
     i.value = (s.proxies || {})[i.dataset.site] || "";
   });
   playerMaxTiles = s.max_player_tiles;
+  adoptPlayerQuality(s);
   runSystemCheck();
   loadVip();
 }
@@ -663,6 +719,16 @@ function updateDiskDim() {
   $("s-disk-resume").disabled = !on;
 }
 $("s-dur").addEventListener("input", (e) => { $("dur-val").textContent = e.target.value; });
+// Speed limits are entered in Mbps (matches the header meters); show MB/s too.
+function updateLimitHint() {
+  const fmt = (id, arrow) => {
+    const v = Number($(id).value) || 0;
+    return v > 0 ? `${arrow} ${v} Mbps ≈ ${(v / 8).toFixed(v < 8 ? 2 : 1)} MB/s` : `${arrow} unlimited`;
+  };
+  $("s-limit-hint").textContent = `${fmt("s-dl-limit", "↓")}  ·  ${fmt("s-ul-limit", "↑")}`;
+}
+$("s-dl-limit").addEventListener("input", updateLimitHint);
+$("s-ul-limit").addEventListener("input", updateLimitHint);
 $("s-notif").closest(".toggle-row").addEventListener("click", () => setTimeout(updateNotifDim, 0));
 $("s-disk").closest(".toggle-row").addEventListener("click", () => setTimeout(updateDiskDim, 0));
 
@@ -714,6 +780,9 @@ $("s-save").addEventListener("click", async () => {
     preview_engine: $("s-pengine").value,
     preview_player_path: $("s-ppath").value,
     max_player_tiles: $("s-player-max").value,
+    gpu_flags: $("s-gpu").classList.contains("on"),
+    dl_limit_mbps: $("s-dl-limit").value,
+    ul_limit_mbps: $("s-ul-limit").value,
     api_token: $("s-api-token").value,
     proxy_default: $("s-proxy-default").value,
     proxies: Object.fromEntries([...document.querySelectorAll(".s-proxy-site")]
@@ -747,6 +816,48 @@ document.querySelectorAll("button[data-ptest]").forEach(btn => {
     }
     btn.disabled = false;
   });
+});
+
+// Settings → Performance snapshot: backend samples CPU for ~10 s (blocking),
+// then the report is shown in a scrollable modal with a Copy button.
+$("s-perf").addEventListener("click", async () => {
+  if (!API) return;
+  const btn = $("s-perf");
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Sampling…";
+  try {
+    const r = await API.perf_snapshot(10);
+    if (!r || !r.ok) { toast("✕ " + ((r && r.error) || "Snapshot failed."), "err"); return; }
+    modal("Performance snapshot",
+          r.path ? `Saved to: ${r.path}` : "", "Copy", () => {}, true);
+    const box = $("modal-text");
+    const pre = document.createElement("pre");
+    pre.textContent = r.text || "";
+    pre.style.cssText = "max-height:50vh;overflow:auto;margin:8px 0 0;white-space:pre-wrap;"
+      + "font-size:11px;user-select:text;text-align:left";
+    box.appendChild(pre);
+    const copy = async () => {
+      try { await navigator.clipboard.writeText(r.text || ""); }
+      catch (_) {
+        const ta = document.createElement("textarea");   // clipboard API unavailable
+        ta.value = r.text || "";
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); } catch (_e) {}
+        ta.remove();
+      }
+      toast("✓ Copied to clipboard");
+    };
+    $("modal-cancel").style.display = "";      // keep open on Copy; Close dismisses
+    $("modal-cancel").textContent = "Close";
+    $("modal-ok").onclick = copy;
+  } catch (e) {
+    toast("✕ Snapshot failed: " + (e && e.message || e), "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 });
 
 async function runSystemCheck() {
@@ -817,6 +928,10 @@ document.addEventListener("click", (e) => {
   if (sw && API) {
     const on = !sw.classList.contains("on");
     sw.classList.toggle("on", on);
+    const swRow = sw.closest(".row");
+    if (swRow) swRow._sig = null;       // optimistic flip → re-sync next tick
+    const swTile = sw.closest("[data-tile]");
+    if (swTile) swTile._ps = null;
     API.set_auto(sw.dataset.auto, on);
     return;
   }
@@ -1039,6 +1154,23 @@ function retab(tab) {
 // Tile". A tile can outlive its source (closing a tile never touches the
 // Recorder or Saved Models, and removing a model there never auto-closes an
 // open tile) — that orphaned case gets a minimal menu.
+// Saved → Recorder with AUTO switched on. Live models also start recording
+// right away; offline ones are picked up by AUTO the moment they go live.
+function savedRecAutoItems(keys, suffix) {
+  const stMap = S.saved_status || {};
+  const isLive = k => !!stMap[k] && (stMap[k][0] === "online" || stMap[k][0] === "recording");
+  const live = keys.filter(isLive), idle = keys.filter(k => !isLive(k));
+  const run = () => {
+    if (live.length) API.saved_record(live, true);
+    if (idle.length) API.saved_to_recorder(idle, true);
+  };
+  return [live.length
+    ? { label: `▶  Add to Recorder & Start Recording + AUTO ON${suffix}`,
+        action: () => confirmCrossSiteRec(keys, run) }
+    : { label: `＋  Add to Recorder + AUTO ON${suffix}`,
+        action: () => { warnCrossSiteKeys(keys); run(); } }];
+}
+
 function tileContextItems(t) {
   const closeItem = { label: "✕  Close Tile (Player only)", action: () => closePlayerTile(t.id) };
   const m = (S && S.models || []).find(x => x.key === t.key.toLowerCase());
@@ -1078,6 +1210,7 @@ function tileContextItems(t) {
         action: () => { warnCrossSiteKeys(keys); API.saved_to_recorder(keys); } },
       liveNow ? { label: "▶  Add to Recorder & Start Recording",
                   action: () => confirmCrossSiteRec(keys, () => API.saved_record(keys)) } : null,
+      ...savedRecAutoItems(keys, ""),
       { label: "▶  Preview", action: () => doPreview(savedIt.name, savedIt.site) },
       "hr",
       { label: "🔗  Copy Model URL", action: () => API.copy_urls(keys, true, false) },
@@ -1135,8 +1268,7 @@ document.addEventListener("contextmenu", (e) => {
             action: () => API.saved_remove([`saved:${k0}`]) }
         : { label: "⭐  Add to Saved Models", action: () => API.add_saved(keys) },
       { label: "▶  Preview", action: () => doPreview(m.name, m.site) },
-      (m.status === "online" || m.status === "recording")
-        ? { label: "▶  Add to Player", action: () => addPlayerTile(m.name, m.site) } : null,
+      { label: "▶  Add to Player", action: () => addPlayerTile(m.name, m.site) },
       { label: "⭐  Set Rank", sub: rankSub(keys, false) },
       { label: "🔗  Edit Links…", action: () => openLinkEditor(k0) },
       m.vip ? { label: "🌟  Remove from VIP List", action: () => vipRefresh(() => API.vip_remove(keys)) }
@@ -1161,7 +1293,7 @@ document.addEventListener("contextmenu", (e) => {
       { label: `🌟  Remove from VIP List  (${n})`, action: () => vipRefresh(() => API.vip_remove(keys)) },
       { label: `▶  Add to Player  (${n})`, action: () => addPlayerTilesBulk(
           keys.map(k => (S.models || []).find(x => x.key === k))
-              .filter(mm => mm && (mm.status === "online" || mm.status === "recording"))
+              .filter(Boolean)
               .map(mm => ({ name: mm.name, site: mm.site }))) },
       "hr",
       { label: `🌐  Open in Browser  (${n})`, action: () => openBrowser(keys, false, false) },
@@ -1184,8 +1316,9 @@ document.addEventListener("contextmenu", (e) => {
         action: () => { warnCrossSiteKeys(keys); API.saved_to_recorder(keys); } },
       liveNow ? { label: "▶  Add to Recorder & Start Recording",
                   action: () => confirmCrossSiteRec(keys, () => API.saved_record(keys)) } : null,
+      ...savedRecAutoItems(keys, ""),
       { label: "▶  Preview", action: () => doPreview(it.name, it.site) },
-      liveNow ? { label: "▶  Add to Player", action: () => addPlayerTile(it.name, it.site) } : null,
+      { label: "▶  Add to Player", action: () => addPlayerTile(it.name, it.site) },
       "hr",
       { label: "🔗  Copy Model URL", action: () => API.copy_urls(keys, true, false) },
       { label: "🌐  Open in Browser", action: () => openBrowser(keys, true, false) },
@@ -1201,13 +1334,13 @@ document.addEventListener("contextmenu", (e) => {
     ] : [
       { label: `＋  Add to Recorder  (${n})`,
         action: () => { warnCrossSiteKeys(keys); API.saved_to_recorder(keys); } },
+      ...savedRecAutoItems(keys, `  (${n})`),
       { label: `⭐  Set Rank  (${n})`, sub: rankSub(keys, true) },
       { label: `🌟  Add to VIP List  (${n})`, action: () => vipRefresh(() => API.vip_add(keys)) },
       { label: `🌟  Remove from VIP List  (${n})`, action: () => vipRefresh(() => API.vip_remove(keys)) },
       { label: `▶  Add to Player  (${n})`, action: () => {
-          const stMap = S.saved_status || {};
           addPlayerTilesBulk(keys.map(k => savedCache.items.find(x => x.sid === k))
-            .filter(it => it && stMap[it.sid] && (stMap[it.sid][0] === "online" || stMap[it.sid][0] === "recording"))
+            .filter(Boolean)
             .map(it => ({ name: it.name, site: it.site })));
         } },
       "hr",
@@ -1316,7 +1449,7 @@ function statusOfNameSite(name, site) {
 // theater tile star widgets.
 function rankInfoFor(name, site) {
   const key = `${site}:${name}`;
-  const m = (S && S.models || []).find(x => x.key === key);
+  const m = modelByKey(key);
   if (m) return { key, rank: m.rank };
   const it = savedCache.items.find(x =>
     x.site === site && x.name.toLowerCase() === name.toLowerCase());
@@ -1337,8 +1470,11 @@ function patchPreviewControls() {
   }
   const badge = $("player-status");
   badge.hidden = false;
-  badge.className = `st ${st}`;
-  badge.querySelector(".st-txt").textContent = STATUS_TXT[st];
+  if (badge._st !== st) {
+    badge._st = st;
+    badge.className = `st ${st}`;
+    badge.querySelector(".st-txt").textContent = STATUS_TXT[st];
+  }
   $("player-rec").disabled = st !== "online";
   $("player-stop").disabled = st !== "recording";
 }
@@ -1353,8 +1489,9 @@ $("player-stop").addEventListener("click", () => {
    Every open tile streams live (muted) at once, in either layout — up to
    playerMaxTiles concurrent HLS connections. That's the real bandwidth/CPU
    cost of opening more tiles; the Settings cap exists to bound it.
-   Tiles start streaming the moment they're added and KEEP streaming while
-   other tabs are in front, so switching back to the Player never reloads. */
+   Tiles start streaming the moment they're added. Tiles that are not
+   visible (other tab, scrolled away, filtered out) pause loading after ~3 s
+   and resume at the live edge when shown — the hls instance is kept. */
 let playerTiles = [];           // [{id, key, name, site}], insertion order = grid order
 let playerHls = new Map();      // tileId -> Hls instance (or {destroy,media} stub)
 let playerLayout = "grid";      // "grid" | "theater"
@@ -1374,6 +1511,126 @@ let playerCooldownUntil = new Map(); // tileId -> ms timestamp; skip auto-retry 
 let playerTileErr = new Map();       // tileId -> short error text shown on the tile
 
 const PLAYER_RETRY_MS = 30000;  // wait between attempts for a tile that failed
+const PLAYER_HIDE_PAUSE_MS = 3000;  // not-visible this long → stop loading the tile
+const PLAYER_START_SLOTS = 4;       // max tiles in the resolve/attach phase at once
+
+// Player tile quality cap (pixel height; 0 = Max). Mirrors the persisted
+// server-side `player_quality` setting; recordings are unaffected by it.
+let playerQuality = 0;
+function playerQualityLabel(q) { return q ? `${q}p` : "Max"; }
+function syncPlayerQualityUI() {
+  const sel = $("player-quality");
+  if (sel) sel.value = String(playerQuality);
+}
+// Adopt the persisted value from a get_settings() result; if it differs from
+// what tiles already started with (settings arrived late), reload them.
+function adoptPlayerQuality(s) {
+  const q = Number(s && s.player_quality) || 0;
+  if (q === playerQuality) return;
+  playerQuality = q;
+  syncPlayerQualityUI();
+  restartPlayerTiles();
+}
+// Reload every playing tile (through the start gate) so it picks up the
+// current playerQuality.
+function restartPlayerTiles() {
+  const ids = [...playerHls.keys()];
+  for (const id of ids) stopTilePlayback(id);
+  if (!ids.length) return;
+  playerCooldownUntil.clear();
+  for (const id of ids) playTile(id, { silent: true });
+}
+
+// Start gate: at most PLAYER_START_SLOTS tiles resolve/attach at once, the
+// rest queue FIFO. A lone tile acquires a free slot immediately (no delay).
+let playerStartActive = 0;
+const playerStartQueue = [];
+function acquireStartSlot() {
+  if (playerStartActive < PLAYER_START_SLOTS) { playerStartActive++; return Promise.resolve(); }
+  return new Promise(res => playerStartQueue.push(res));
+}
+function releaseStartSlot() {
+  const next = playerStartQueue.shift();
+  if (next) next();            // slot handed straight to the next waiter
+  else playerStartActive--;
+}
+
+// Visibility pausing: a tile that is off-screen (other tab, scrolled away,
+// filtered out, window hidden) stops loading after PLAYER_HIDE_PAUSE_MS and
+// resumes at the live edge when shown. The hls instance and element stay.
+let playerTileInView = new Map();   // tileId -> last IntersectionObserver verdict
+let playerVisTimers = new Map();    // tileId -> pending "pause" timeout
+let playerVisPaused = new Set();    // tileIds paused by this mechanism
+let playerObserved = new Map();     // tileId -> element currently observed
+const playerIO = ("IntersectionObserver" in window)
+  ? new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        const id = Number(e.target.dataset.tile);
+        if (!playerHls.has(id)) continue;
+        playerTileInView.set(id, e.isIntersecting);
+        tileVisCheck(id);
+      }
+    }, { threshold: 0 })
+  : null;
+
+function tileShouldRun(id) {
+  return playerTileInView.get(id) !== false && document.visibilityState === "visible";
+}
+function watchTileVisibility(id) {
+  if (!playerIO) return;
+  const el = playerTileEls.get(id);
+  const old = playerObserved.get(id);
+  if (!el || old === el) return;
+  if (old) playerIO.unobserve(old);
+  playerIO.observe(el);
+  playerObserved.set(id, el);
+}
+function unwatchTileVisibility(id) {
+  const old = playerObserved.get(id);
+  if (old && playerIO) playerIO.unobserve(old);
+  playerObserved.delete(id);
+  playerTileInView.delete(id);
+  const tm = playerVisTimers.get(id);
+  if (tm) clearTimeout(tm);
+  playerVisTimers.delete(id);
+  playerVisPaused.delete(id);
+}
+function tileVisCheck(id) {
+  if (!playerHls.has(id)) return;
+  const timer = playerVisTimers.get(id);
+  if (tileShouldRun(id)) {
+    if (timer) { clearTimeout(timer); playerVisTimers.delete(id); }
+    if (playerVisPaused.has(id)) resumeTileLoad(id);
+  } else if (!timer && !playerVisPaused.has(id)) {
+    playerVisTimers.set(id, setTimeout(() => {
+      playerVisTimers.delete(id);
+      if (!tileShouldRun(id)) pauseTileLoad(id);
+    }, PLAYER_HIDE_PAUSE_MS));
+  }
+}
+function pauseTileLoad(id) {
+  const inst = playerHls.get(id);
+  if (!inst || playerVisPaused.has(id)) return;
+  const el = document.querySelector(`[data-tile="${id}"] .tile-video`);
+  if (inst.stopLoad) { try { inst.stopLoad(); } catch (_) {} }
+  if (el) el.pause();
+  playerVisPaused.add(id);
+  const t = findPlayerTile(id);
+  plog(`tile ${t ? t.name : id}: paused (not visible)`);
+}
+function resumeTileLoad(id) {
+  playerVisPaused.delete(id);
+  const inst = playerHls.get(id);
+  if (!inst) return;
+  const el = document.querySelector(`[data-tile="${id}"] .tile-video`);
+  if (inst.startLoad) { try { inst.startLoad(-1); } catch (_) {} }   // -1 = live edge
+  const t = findPlayerTile(id);
+  if (el) tilePlay(el, t ? t.name : id);
+  plog(`tile ${t ? t.name : id}: resumed`);
+}
+document.addEventListener("visibilitychange", () => {
+  for (const id of [...playerHls.keys()]) tileVisCheck(id);
+});
 
 // Playback diagnostics land in the Activity Log ("[ui] …") — in-page media
 // failures are otherwise completely invisible from outside the WebView.
@@ -1403,7 +1660,7 @@ function clearTileError(tileId) {
 function tileKey(name, site) { return `${site}:${name}`; }
 function findPlayerTile(id) { return playerTiles.find(t => t.id === id); }
 function statusOfKey(key) {
-  const m = (S && S.models || []).find(x => x.key === key);
+  const m = modelByKey(key);
   return m ? m.status : "offline";
 }
 
@@ -1420,7 +1677,11 @@ function loadPlayerTab() {
   if (playerTabLoaded) return;
   playerTabLoaded = true;
   plog("player tab opened (diagnostics active)");
-  if (!settingsLoaded) API.get_settings().then(s => { playerMaxTiles = s.max_player_tiles; renderPlayerTab(); });
+  if (!settingsLoaded) API.get_settings().then(s => {
+    playerMaxTiles = s.max_player_tiles;
+    adoptPlayerQuality(s);
+    renderPlayerTab();
+  });
 }
 
 // REC/Stop buttons are in every tile's markup but only displayed (via CSS)
@@ -1433,7 +1694,7 @@ function tileHtml(t) {
   // AUTO switch is only live when the model is in the Recorder (set_auto
   // refuses otherwise) — "na" renders it dimmed with a hint instead.
   // Recorder keys are always lowercase; tile keys may keep Saved-list case.
-  const am = (S && S.models || []).find(x => x.key === t.key.toLowerCase());
+  const am = modelByKey(t.key.toLowerCase());
   return `
     <div class="tile" data-tile="${t.id}">
       <div class="tile-media">
@@ -1521,12 +1782,12 @@ function applyPlayerTileFilter(opts) {
     if (ok) vis.push(t);
   }
   const act = playerFilterActive();
-  $("player-count").textContent = `${playerTiles.length} / ${playerMaxTiles} tiles`
-    + (act ? ` · ${vis.length} shown` : "");
+  setTxtId("player-count", `${playerTiles.length} / ${playerMaxTiles} tiles`
+    + (act ? ` · ${vis.length} shown` : ""));
   const empty = $("player-empty");
-  empty.textContent = playerTiles.length === 0
+  setTxtId("player-empty", playerTiles.length === 0
     ? PLAYER_EMPTY_TXT
-    : "No open tiles match the Status / Rank filters. Tiles are only hidden — clear the filters to bring them back.";
+    : "No open tiles match the Status / Rank filters. Tiles are only hidden — clear the filters to bring them back.");
   empty.hidden = vis.length > 0;
   $("player-stage").hidden = vis.length === 0;
   return vis;
@@ -1579,6 +1840,8 @@ function reattachPlayerPlayback() {
   for (const [tileId, inst] of playerHls) {
     const el = document.querySelector(`[data-tile="${tileId}"] .tile-video`);
     if (!el) continue;
+    watchTileVisibility(tileId);
+    const vp = playerVisPaused.has(tileId);   // visibility-paused: stay paused
     if (inst.media !== el) {
       if (inst.attachMedia) {
         try { inst.detachMedia(); } catch (_) {}
@@ -1588,8 +1851,8 @@ function reattachPlayerPlayback() {
         inst.media = el;
       }
       const t = findPlayerTile(tileId);
-      tilePlay(el, t ? t.name : tileId);
-    } else if (el.paused) {
+      if (!vp) tilePlay(el, t ? t.name : tileId);
+    } else if (el.paused && !vp) {
       // Moving an element in the DOM pauses its <video>; just resume.
       el.play().catch(() => {});
     }
@@ -1602,44 +1865,53 @@ function reattachPlayerPlayback() {
 // playback as models go online/offline. Never touches a <video> element
 // that's already correctly playing, so an active stream isn't interrupted.
 function patchPlayerStatuses() {
+  const showing = activeTab === "player";
   for (const t of playerTiles) {
     const st = statusOfTile(t);
-    const el = document.querySelector(`[data-tile="${t.id}"] .st`);
-    if (el) {
-      el.className = `st ${st}`;
-      el.querySelector(".st-txt").textContent = STATUS_TXT[st];
-    }
-    const recBtn = document.querySelector(`[data-tile-rec="${t.id}"]`);
-    if (recBtn) recBtn.disabled = st !== "online";
-    const stopBtn = document.querySelector(`[data-tile-stop="${t.id}"]`);
-    if (stopBtn) stopBtn.disabled = st !== "recording";
-    const starEl = document.querySelector(`[data-tile="${t.id}"] .tile-star`);
-    if (starEl) {
+    // DOM patching only while the Player tab is showing (the tab-click handler
+    // calls this on switch, so it is fresh immediately); each tile is skipped
+    // unless its inputs changed. Playback start/stop below always runs.
+    const tel = showing ? playerTileEls.get(t.id) : null;
+    if (tel && tel.isConnected) {
       const { key: rkey, rank } = rankInfoFor(t.name, t.site);
-      starEl.dataset.stars = rkey;
-      if (starEl.dataset.rank !== String(rank)) {
-        starEl.dataset.rank = rank;
-        starEl.innerHTML = starsHtml(rank);
-      }
-    }
-    // 🔗 cross-site marker (dataset caches the last-set html so the node —
-    // and any open tooltip — is only replaced when the state changes)
-    const lnkEl = document.querySelector(`[data-tile="${t.id}"] .tile-lnk`);
-    if (lnkEl) {
+      const am = modelByKey(t.key.toLowerCase());
       const want = lnkHtml(akaOf(t.name, t.site), st);
-      if (lnkEl.dataset.h !== want) { lnkEl.dataset.h = want; lnkEl.innerHTML = want; }
-    }
-    // AUTO switch (theater tile): follows Recorder membership + auto state
-    const autoEl = document.querySelector(`[data-tile="${t.id}"] .tile-auto`);
-    if (autoEl) {
-      const am = (S && S.models || []).find(x => x.key === t.key.toLowerCase());
-      const sw = autoEl.querySelector(".switch");
-      sw.classList.toggle("on", !!(am && am.auto));
-      autoEl.classList.toggle("na", !am);
-      autoEl.title = am ? "Auto-record when online"
-                        : "Add to Recorder to enable Auto-Record";
-      if (am) sw.dataset.auto = t.key.toLowerCase();
-      else delete sw.dataset.auto;
+      const psig = `${st}|${rkey}|${rank}|${am ? (am.auto ? 2 : 1) : 0}|${want}`;
+      if (tel._ps !== psig) {
+        tel._ps = psig;
+        const el = tel.querySelector(".st");
+        if (el) {
+          el.className = `st ${st}`;
+          el.querySelector(".st-txt").textContent = STATUS_TXT[st];
+        }
+        const recBtn = tel.querySelector(`[data-tile-rec="${t.id}"]`);
+        if (recBtn) recBtn.disabled = st !== "online";
+        const stopBtn = tel.querySelector(`[data-tile-stop="${t.id}"]`);
+        if (stopBtn) stopBtn.disabled = st !== "recording";
+        const starEl = tel.querySelector(".tile-star");
+        if (starEl) {
+          starEl.dataset.stars = rkey;
+          if (starEl.dataset.rank !== String(rank)) {
+            starEl.dataset.rank = rank;
+            starEl.innerHTML = starsHtml(rank);
+          }
+        }
+        // 🔗 cross-site marker (dataset caches the last-set html so the node —
+        // and any open tooltip — is only replaced when the state changes)
+        const lnkEl = tel.querySelector(".tile-lnk");
+        if (lnkEl && lnkEl.dataset.h !== want) { lnkEl.dataset.h = want; lnkEl.innerHTML = want; }
+        // AUTO switch (theater tile): follows Recorder membership + auto state
+        const autoEl = tel.querySelector(".tile-auto");
+        if (autoEl) {
+          const sw = autoEl.querySelector(".switch");
+          sw.classList.toggle("on", !!(am && am.auto));
+          autoEl.classList.toggle("na", !am);
+          autoEl.title = am ? "Auto-record when online"
+                            : "Add to Recorder to enable Auto-Record";
+          if (am) sw.dataset.auto = t.key.toLowerCase();
+          else delete sw.dataset.auto;
+        }
+      }
     }
     // "checking" is a transient recorder-poll state, not a real status change
     // — reacting to it stopped live playback every poll cycle.
@@ -1676,13 +1948,16 @@ async function playTile(tileId, opts = {}) {
   const cd = playerCooldownUntil.get(tileId);
   if (cd && Date.now() < cd) return;
   playerPending.add(tileId);
-  let r;
+  let r, q;
+  await acquireStartSlot();   // start gate: ≤ PLAYER_START_SLOTS resolving at once
   try {
+    if (!findPlayerTile(tileId)) return;   // tile closed while queued
+    q = playerQuality;   // read after the gate so queued tiles use the latest
     // The bridge call can take a while (Stripchat resolution makes several
     // upstream requests); the race keeps a wedged call from pinning the tile
     // in "pending" forever, which would permanently stop retries.
     r = await Promise.race([
-      API.preview_embedded(t.name, t.site),
+      API.preview_embedded(t.name, t.site, q),
       new Promise((_, rej) => setTimeout(() => rej(new Error("timed out")), 60000)),
     ]);
   } catch (e) {
@@ -1691,9 +1966,12 @@ async function playTile(tileId, opts = {}) {
     try { API.client_log(`Player tile ${t.name} (${t.site}): bridge call failed — ${e && e.message}`); } catch (_) {}
     return;
   } finally {
+    releaseStartSlot();
     playerPending.delete(tileId);
   }
   if (!findPlayerTile(tileId)) return;   // tile closed while awaiting
+  // Quality changed while this resolve was in flight — redo at the new one.
+  if (r.ok && q !== playerQuality) return playTile(tileId, opts);
   if (!r.ok) {
     playerCooldownUntil.set(tileId, Date.now() + PLAYER_RETRY_MS);
     setTileError(tileId, "no public stream — retrying…");
@@ -1712,6 +1990,8 @@ async function playTile(tileId, opts = {}) {
     // fall back to the 30 s retry cycle, not grind for a minute in silence.
     inst = new Hls({
       liveDurationInfinity: true,
+      // Tiles are tiny — keep buffers shallow so many tiles stay cheap.
+      maxBufferLength: 10, maxMaxBufferLength: 15, backBufferLength: 5,
       manifestLoadingMaxRetry: 2, levelLoadingMaxRetry: 2, fragLoadingMaxRetry: 2,
       manifestLoadingRetryDelay: 1000, levelLoadingRetryDelay: 1000, fragLoadingRetryDelay: 1000,
     });
@@ -1749,6 +2029,7 @@ async function playTile(tileId, opts = {}) {
     inst = { media: el, destroy() {} };
   }
   playerHls.set(tileId, inst);
+  watchTileVisibility(tileId);   // observer's first callback pauses it if off-screen
   tilePlay(el, t.name);
   // The opaque poster overlays the video; hiding it reveals playback.
   const poster = document.querySelector(`[data-tile="${tileId}"] .tile-poster`);
@@ -1758,12 +2039,18 @@ async function playTile(tileId, opts = {}) {
 function stopTilePlayback(tileId) {
   const inst = playerHls.get(tileId);
   if (!inst) return;
+  unwatchTileVisibility(tileId);
   inst.destroy();
   playerHls.delete(tileId);
   const el = document.querySelector(`[data-tile="${tileId}"] .tile-video`);
   if (el) { el.pause(); el.removeAttribute("src"); el.load(); }
   const poster = document.querySelector(`[data-tile="${tileId}"] .tile-poster`);
   if (poster) poster.hidden = false;
+}
+
+function tileIsLive(t) {
+  const st = statusOfTile(t);
+  return st === "online" || st === "recording";
 }
 
 const PLAYER_CAP_MSG = "Player has the max tiles open — remove one to add a new one, or raise the cap in Settings.";
@@ -1782,10 +2069,14 @@ function addPlayerTile(name, site) {
   if (r === "cap") { toast(PLAYER_CAP_MSG, true); return false; }
   const t = playerTiles[playerTiles.length - 1];
   renderPlayerTab();
+  const live = tileIsLive(t);
   toast(playerFilterActive() && !tileMatchesFilter(t)
     ? `▶ Added ${name} — hidden by the Player's Status/Rank filters.`
-    : `▶ Added ${name} to the Player tab.`);
-  playTile(t.id);
+    : live ? `▶ Added ${name} to the Player tab.`
+           : `▶ Added ${name} to the Player tab — it starts playing when the model goes live.`);
+  // Offline tiles wait: patchPlayerStatuses starts them once the model is
+  // live (playing now would only error, toast, and arm the retry cooldown).
+  if (live) playTile(t.id);
   return true;
 }
 function addPlayerTilesBulk(items) {
@@ -1802,7 +2093,7 @@ function addPlayerTilesBulk(items) {
       ? newIds.filter(id => !tileMatchesFilter(findPlayerTile(id))).length : 0;
     toast(`▶ Added ${added} model(s) to the Player tab.`
       + (hidden ? ` (${hidden} hidden by the Status/Rank filters.)` : ""));
-    for (const id of newIds) playTile(id);
+    for (const id of newIds) if (tileIsLive(findPlayerTile(id))) playTile(id);
   }
   if (cap) toast(PLAYER_CAP_MSG, true);
   else if (!added) toast("Those models already have open tiles.", true);
@@ -1904,6 +2195,12 @@ function clearPlayerTiles() {
   renderPlayerTab();
   toast("Player cleared.");
 }
+$("player-quality").addEventListener("change", () => {
+  playerQuality = Number($("player-quality").value) || 0;
+  try { API.set_player_quality(playerQuality); } catch (_) {}
+  toast(`Player tiles → ${playerQualityLabel(playerQuality)}`);
+  restartPlayerTiles();
+});
 $("player-clear").addEventListener("click", () => {
   if (!playerTiles.length) { toast("Player is already empty."); return; }
   modal("Clear Player",
@@ -2482,6 +2779,13 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
   t.classList.add("active");
   document.querySelector(".panel.active").classList.remove("active");
   document.querySelector(`.panel[data-panel="${t.dataset.tab}"]`).classList.add("active");
+  activeTab = t.dataset.tab;
+  // Paint the newly visible tab from the latest snapshot right away (the
+  // per-tick render skips hidden tabs).
+  if (activeTab === "recorder" && S) {
+    renderDash(S.dash);
+    renderRec(S.models);
+  }
   if (t.dataset.tab === "settings") { loadSettings(); loadVip(); }
   if (t.dataset.tab === "output") loadPipeFields();
   if (t.dataset.tab === "saved") { savedCache.version = -1; renderSaved(); }
@@ -2556,6 +2860,7 @@ function startStars() {
 
 /* ══ modal / prompt / toast ══ */
 function modal(title, text, okLabel, onOk, infoOnly = false) {
+  $("modal-cancel").textContent = "Cancel";
   $("modal-title").textContent = title;
   $("modal-text").textContent = text;
   $("modal-ok").textContent = okLabel;

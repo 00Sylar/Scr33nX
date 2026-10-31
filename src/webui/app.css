@@ -569,6 +569,7 @@ input[type="range"]::-webkit-slider-thumb:hover { box-shadow: var(--shadow-sm), 
    children so the strip scrolls inside itself instead. */
 .panel[data-panel="player"].active > * { min-width: 0; }
 .player-toggle-group { display: flex; gap: 4px; }
+.player-quality { padding: 2px 8px; font-size: var(--fs-0); cursor: pointer; }
 .player-toggle-group .btn.active { color: var(--red-bright); border-color: var(--red-line); }
 .player-empty { padding: var(--sp-6); text-align: center; color: var(--text-3); font-size: var(--fs-1); }
 

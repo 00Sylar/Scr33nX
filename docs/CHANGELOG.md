@@ -12,6 +12,71 @@ grouped by date / milestone.
 
 ---
 
+## V2.9 — 2026-10-30
+
+**Speed limits & a lighter Player.** Cap Scr33nX's download and Telegram upload
+speed, add any model to the Player (even offline), add + record + AUTO in one click,
+and a Player that no longer starves your recordings.
+
+### Added
+- **Add to Player for any model.** Right-click → **Add to Player** is now always there on
+  the Recorder and Saved Models tabs (single rows and selections), not only for live
+  models. An offline model's tile waits quietly and starts playing on its own as soon
+  as the model goes live.
+- **Add to Recorder & Start Recording + AUTO ON.** New right-click entry on Saved Models
+  (and on Player tiles of saved models): adds the model to the Recorder, starts
+  recording if it's live, and turns **AUTO** on. For offline models it shows as
+  **＋ Add to Recorder + AUTO ON** and AUTO starts the recording when they go live.
+- **Speed limits** (**⚙ Settings → 🚦 Speed limits**). Cap the total **download**
+  (recordings + Player tiles) and/or the total Telegram **upload** in Mbps, the same unit
+  as the header meters (0 = unlimited, the default). Takes effect on Save. Note: a
+  download cap below what your live recordings need makes them drop segments.
+- **Player quality dropdown.** The Player tab toolbar has a new **Quality** selector
+  (*Max / 720p / 480p / 360p*) for what tiles pull. Tiles are small, so a lower
+  setting saves a lot of bandwidth, and it never affects what a recording captures.
+  The default is **Max**, exactly as before, and your choice is remembered. Changing
+  it reloads the open tiles.
+- **Hidden tiles pause automatically.** A tile that is scrolled out of view, filtered
+  out (Status/Rank), on another tab, or in a hidden/minimized window stops loading
+  after ~3 s and resumes at the live edge the moment it is shown again.
+- Tiles open in small batches (4 at a time) so "Fill Top Ranked" doesn't hit the
+  network in one burst; a single tile still starts instantly.
+- **Settings → Performance snapshot.** A **Capture (10 s)** button that samples where
+  the app spends CPU (per thread group, with the functions involved, plus relay
+  cache/queue numbers) and shows a report you can copy. Run it while the lag is
+  happening. It is also saved next to the logs. Nothing is sent anywhere.
+- **Settings → Experimental: GPU / rendering flags** (off by default, restart required).
+  Passes extra Chromium flags to the web view: GPU rasterization, zero-copy video,
+  and no background/occlusion throttling.
+
+### Changed
+- A Telegram upload now only times out after **10 minutes without progress** (it used
+  to give up after 2 hours total), so large files under an upload limit aren't cut off
+  and re-sent.
+- **Less UI work per second.** The 1 s refresh now skips what hasn't changed: rows,
+  counters and header text are only rewritten when their data changes, the Recorder
+  and Saved tables are only rebuilt while their tab is showing, model look-ups are
+  indexed instead of scanned per tile, and the refresh slows to ~3 s while the
+  window is hidden/minimized (back to 1 s the moment it's shown). Nothing changes
+  automatically in quality or tile count.
+- The per-second state snapshot no longer scans every saved model.
+- Player tiles use a lighter buffer (10 s ahead) — they're muted thumbnails.
+- The relay's segment cache now keeps a segment for a few seconds while tiles are
+  open, so a tile and a recording of the same model share one download instead of
+  fetching it twice.
+
+### Fixed
+- **Opening many Player tiles no longer makes every recording lose segments.** When the
+  relay's cache hit its cap it used to switch segment prefetching off entirely, so all
+  recordings fell behind at once ("download can't keep up", "prefetch cache full").
+  It now makes room by dropping already-served segments first, and tile prefetching
+  runs on its own small pool, limited to the newest segments and to part of the cache,
+  so tiles can't take capacity from recordings.
+- A Player tile's quality and lost-segment tracking are now kept separate from the
+  recording of the same model, so a struggling tile can't downgrade a recording.
+
+---
+
 ## V2.8 — 2026-10-03
 
 **Proxy support — because Chaturbate can now refuse a whole network.**

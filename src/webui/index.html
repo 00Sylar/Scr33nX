@@ -198,7 +198,7 @@
             <button class="btn mini" data-stripe="side">▥ Strip: Side</button>
           </div>
           <div class="spacer"></div>
-          <div class="msf" id="player-msf" title="Show only tiles with these statuses — hidden tiles keep streaming, and the same filter scopes the '+ Add Tile' picker.">
+          <div class="msf" id="player-msf" title="Show only tiles with these statuses — hidden tiles pause (and resume instantly when shown), and the same filter scopes the '+ Add Tile' picker.">
             <button class="btn msf-btn">Status: All ▾</button>
             <div class="msf-menu" hidden>
               <label data-v="recording"><span class="cb"></span>Recording</label>
@@ -210,7 +210,7 @@
               <hr><label data-v="__clear"><span style="width:16px"></span>Clear filter</label>
             </div>
           </div>
-          <div class="msf" id="player-rankf" title="Show only tiles with this rank — hidden tiles keep streaming, and the same filter scopes the '+ Add Tile' picker.">
+          <div class="msf" id="player-rankf" title="Show only tiles with this rank — hidden tiles pause (and resume instantly when shown), and the same filter scopes the '+ Add Tile' picker.">
             <button class="btn msf-btn">Rank: All ▾</button>
             <div class="msf-menu" hidden>
               <label data-v="5"><span class="cb"></span>★★★★★</label>
@@ -222,7 +222,13 @@
               <hr><label data-v="__clear"><span style="width:16px"></span>Clear filter</label>
             </div>
           </div>
-          <button class="btn" id="player-fill" title="Fill the Player with your highest-ranked models that are online right now (up to the tile cap).">★ Fill Top Ranked</button>
+          <select class="player-quality" id="player-quality" title="Video quality for Player tiles. Lower = much less bandwidth, so recordings are not starved. Max = best quality.">
+            <option value="0">Quality: Max</option>
+            <option value="720">Quality: 720p</option>
+            <option value="480">Quality: 480p</option>
+            <option value="360">Quality: 360p</option>
+          </select>
+          <button class="btn" id="player-fill"title="Fill the Player with your highest-ranked models that are online right now (up to the tile cap).">★ Fill Top Ranked</button>
           <button class="btn" id="player-clear">🧹 Clear Player</button>
           <button class="btn" id="player-add">＋ Add Tile</button>
         </div>
@@ -355,6 +361,26 @@
               <input id="s-ppath" placeholder="auto-detect" spellcheck="false"></div>
             <div class="field"><label>Max Player tiles open at once (1-100)</label>
               <input id="s-player-max" title="Caps how many tiles you can have open in the Player tab. Every open tile streams live (muted) at once, so raising this raises bandwidth/CPU use too — lower it if you're stretched thin."></div>
+            <label class="toggle-row" style="margin-top:8px">
+              <span class="switch" id="s-gpu"></span>Experimental: GPU / rendering flags (restart required)</label>
+            <div class="vip-hint">Passes extra Chromium rendering flags to the app's web view
+              (GPU rasterization, zero-copy video, no background throttling). Off by default.
+              Takes effect after restarting Scr33nX.</div>
+          </div>
+          <div class="card">
+            <h3>🚦 Speed limits</h3>
+            <div class="form-2col">
+              <div class="field"><label>Download limit (Mbps, 0 = unlimited)</label>
+                <input id="s-dl-limit" placeholder="0"></div>
+              <div class="field"><label>Upload limit (Mbps, 0 = unlimited)</label>
+                <input id="s-ul-limit" placeholder="0"></div>
+            </div>
+            <div class="vip-hint" id="s-limit-hint"></div>
+            <div class="vip-hint">Same unit as the ↓/↑ meters in the header (8 Mbps ≈ 1 MB/s).
+              <b>Download</b> caps all stream traffic — recordings and Player tiles together.
+              Live streams can't be slowed down: a cap below what your active recordings need
+              makes them drop segments. <b>Upload</b> caps the Telegram upload workers combined.
+              Both apply as soon as you Save.</div>
           </div>
           <div class="card">
             <h3>🌐 Proxy</h3>
@@ -417,6 +443,13 @@
             <h3>🔍 System Check</h3>
             <div id="syscheck"></div>
             <button class="btn" id="s-recheck" style="margin-top:10px">🔍 Re-check</button>
+          </div>
+          <div class="card">
+            <h3>⏱ Performance snapshot</h3>
+            <div class="vip-hint" style="margin:0 0 10px">Samples where the app spends CPU for
+              10 seconds — run it while the lag is happening, then paste the result.
+              Nothing is sent anywhere.</div>
+            <button class="btn" id="s-perf">Capture (10 s)</button>
           </div>
         </div>
         <div class="settings-save">

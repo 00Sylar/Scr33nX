@@ -19,11 +19,15 @@ import os
 import re
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+import ratelimit
+
 
 TELEGRAM_MAX_BYTES = 3.8 * 1e9   # Telegram's hard per-file upload cap
+UPLOAD_STALL_SECS = 600          # fail an upload after this long without progress
 
 
 @dataclass
@@ -86,6 +90,18 @@ class PipelineWorker:
     def bytes_uploaded(self) -> int:
         """Total bytes sent to Telegram (completed files + in-flight progress)."""
         return self._ul_done + sum(self._ul_inflight.values())
+
+    def apply_upload_limit(self):
+        """Settings saved: re-point connected TDLib clients at (or away from)
+        the throttling proxy. The cap's value itself changes live."""
+        loop = self._loop
+        if not loop or not self.running:
+            return
+        for td in list(self._clients):
+            try:
+                asyncio.run_coroutine_threadsafe(td.apply_upload_proxy(), loop)
+            except RuntimeError:
+                pass
 
     @property
     def running(self) -> bool:
@@ -713,6 +729,10 @@ class _TDLibClient:
                 "system_version":        "Windows",
                 "application_version":   "1.0",
             })
+            # Queued right behind the parameters, so it lands before any login
+            # or upload traffic.
+            assert self._loop
+            self._loop.create_task(self.apply_upload_proxy())
         elif t == "authorizationStateWaitPhoneNumber":
             phone = self._cfg.phone
             if not phone:
@@ -761,6 +781,35 @@ class _TDLibClient:
     async def stop(self):
         self._raw_send({"@type": "close"})
 
+    async def apply_upload_proxy(self):
+        """Upload speed limit: route this client through the local throttling
+        SOCKS5 proxy while a cap is set, directly otherwise. TDLib keeps its
+        proxy list in its database, so stale 127.0.0.1 entries (old port,
+        crash, cap since removed) are always cleared first."""
+        try:
+            res = await self._invoke({"@type": "getProxies"})
+            for p in res.get("proxies") or []:
+                inner = p.get("proxy") if isinstance(p.get("proxy"), dict) else p
+                if inner.get("server") == "127.0.0.1" and p.get("id") is not None:
+                    await self._invoke({"@type": "removeProxy", "proxy_id": p["id"]})
+            if not ratelimit.UPLOAD.active:
+                return
+            port = ratelimit.upload_proxy_port()
+            ptype = {"@type": "proxyTypeSocks5", "username": "", "password": ""}
+            res = await self._invoke({"@type": "addProxy", "server": "127.0.0.1",
+                                      "port": port, "enable": True, "type": ptype})
+            if res.get("@type") == "error":
+                # Newer TDLib builds take the address as a nested proxy object.
+                res = await self._invoke({"@type": "addProxy", "enable": True,
+                                          "proxy": {"@type": "proxy",
+                                                    "server": "127.0.0.1",
+                                                    "port": port, "type": ptype}})
+            if res.get("@type") == "error":
+                self._on_log(f"[tdlib] upload speed limit not applied: "
+                             f"{res.get('message')}")
+        except Exception as e:
+            self._on_log(f"[tdlib] upload speed limit not applied: {e}")
+
     async def send_video(self, file_path: str, caption: str = "",
                           progress_cb=None):
         abs_path = os.path.abspath(file_path).replace("\\", "/")
@@ -788,18 +837,35 @@ class _TDLibClient:
                          .get("video", {})
                          .get("id"))
 
+        # Stall timeout, not a total one: with an upload speed limit a big
+        # file can legitimately take hours, so only fail when nothing has
+        # moved for UPLOAD_STALL_SECS.
+        last = [time.monotonic(), -1]
+
+        def _on_progress(sent):
+            if sent != last[1]:
+                last[0], last[1] = time.monotonic(), sent
+            if progress_cb:
+                progress_cb(sent)
+
         send_ev = asyncio.Event()
         with self._lock:
             self._send_evts[temp_msg_id] = send_ev
         if file_id:
             file_ev = asyncio.Event()
             with self._lock:
-                self._file_evts[file_id] = (file_ev, progress_cb)
+                self._file_evts[file_id] = (file_ev, _on_progress)
 
+        # No file id → no progress updates to watch: keep the old 2 h total.
+        limit = UPLOAD_STALL_SECS if file_id else 7200
         try:
-            await asyncio.wait_for(send_ev.wait(), timeout=7200)
-        except asyncio.TimeoutError:
-            raise Exception("Upload timed out")
+            while not send_ev.is_set():
+                try:
+                    await asyncio.wait_for(send_ev.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    if time.monotonic() - last[0] > limit:
+                        raise Exception("Upload timed out (no progress for "
+                                        f"{limit // 60} min)")
         finally:
             if file_id:
                 with self._lock:

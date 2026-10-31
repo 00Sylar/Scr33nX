@@ -6,6 +6,38 @@ in the repository, and each version is also a
 
 ---
 
+## V2.9 — 2026‑10‑30
+
+**Speed limits & a lighter Player.**
+
+**Added**
+- **Add to Player for any model** — right‑click any Recorder or Saved row (or a
+  selection) → **Add to Player**, whatever its status. Offline tiles wait and
+  start playing by themselves when the model goes live.
+- **Add to Recorder & Start Recording + AUTO ON** — one right‑click entry on
+  Saved Models (and saved models' Player tiles): adds to the Recorder, records
+  if live, and turns AUTO on (offline: **＋ Add to Recorder + AUTO ON**).
+- **⚙ Settings → 🚦 Speed limits** — cap total download (recordings + tiles)
+  and total Telegram upload, in Mbps (0 = unlimited). A download cap below what
+  your recordings need makes them drop segments.
+- **Player Quality dropdown** (*Max / 720p / 480p / 360p*) for tiles; hidden
+  tiles pause automatically; tiles open in small batches.
+- **Settings → Performance snapshot** and an experimental **GPU / rendering
+  flags** switch.
+
+**Changed**
+- Much less UI work per second (only changed rows/counters are redrawn; slower
+  refresh while the window is hidden).
+- A tile and a recording of the same model share one download.
+- Telegram uploads only time out after 10 minutes without progress (was a
+  2‑hour total), so big files under an upload limit aren't cut off.
+
+**Fixed**
+- Opening many Player tiles no longer makes every recording lose segments.
+- A struggling tile can no longer downgrade the recording of the same model.
+
+---
+
 ## V2.8 — 2026‑10‑03
 
 **Proxy support — because Chaturbate can now refuse a whole network.** Since

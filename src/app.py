@@ -5,7 +5,7 @@ app.py — Scr33nX — GUI
 # Single source of truth for the running version. Shown in the header and
 # compared against the latest GitHub release by the update checker.
 # When cutting a release (see CONTRIBUTING.md), bump this to match the new tag.
-APP_VERSION = "2.8"
+APP_VERSION = "2.9"
 GITHUB_REPO = "00Sylar/Scr33nX"   # owner/repo, used for the update check
 
 import os
@@ -32,6 +32,7 @@ import links as model_links
 import recorder
 import cb_relay
 import netproxy
+import ratelimit
 import settings as settings_mod
 from recorder import StreamRecorder, ModelStatus
 from settings import AppSettings, load_settings, save_settings, save_pipeline_settings
@@ -732,6 +733,7 @@ class StreamRecorderApp(tk.Tk):
 
         self.settings = load_settings()
         netproxy.configure(self.settings.proxy_default, self.settings.proxies)
+        ratelimit.configure(self.settings.dl_limit_mbps, self.settings.ul_limit_mbps)
         self.recorder = StreamRecorder()
         self.recorder.output_dir     = self.settings.output_dir
         self.recorder.max_size_mb    = self.settings.max_size_mb

@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
 import netproxy
+import ratelimit
 
 logger = logging.getLogger(__name__)
 
@@ -189,9 +190,25 @@ _PREFETCH_WORKERS = 64
 _CACHE_MAX_BYTES = 768 * 1024 * 1024   # hard cap; beyond it, fall back to miss path
 _ENTRY_TTL = 90.0                      # s: drop fetched segments never requested
 _FETCHED_TTL = 600.0                   # s: how long to remember served URLs
+_JANITOR_EVERY = 2.0                   # s: cache sweep cadence
+
+# Player tiles (label "tile@<max-height>:site:name") are a second consumer of
+# the same segments a recording fetches. Two things keep them from hurting
+# recordings: a served segment stays cached briefly so the tile and ffmpeg
+# share ONE download, and tile prefetch runs on its own small pool, limited
+# to the live edge and to a share of the cache — never the recorders' pool.
+_SERVED_RETAIN = 8.0                   # s: keep a served segment for the 2nd consumer
+_TILE_ACTIVE_WINDOW = 10.0             # s: "tiles are open" if one polled this recently
+_TILE_PREFETCH_WORKERS = 6
+_TILE_PREFETCH_SEGS = 3                # newest N segments of a tile playlist
+_TILE_CACHE_FRAC = 0.6                 # tiles stop prefetching above this cache share
+_TILE_LABEL = re.compile(r"tile@(\d+):")
 
 _executor = ThreadPoolExecutor(max_workers=_PREFETCH_WORKERS,
                                thread_name_prefix="relay-prefetch")
+_tile_executor = ThreadPoolExecutor(max_workers=_TILE_PREFETCH_WORKERS,
+                                    thread_name_prefix="relay-tile")
+_tile_seen = 0.0                       # monotonic ts of the last tile playlist poll
 _state_lock = threading.Lock()
 _cache: dict[str, "_Entry"] = {}       # upstream URL → in-flight/ready segment
 _cache_bytes = 0                       # running total of cached payload bytes
@@ -236,7 +253,7 @@ def set_advert_callback(fn):
 
 
 class _Entry:
-    __slots__ = ("event", "data", "ctype", "status", "ts", "error")
+    __slots__ = ("event", "data", "ctype", "status", "ts", "error", "served")
 
     def __init__(self):
         self.event = threading.Event()
@@ -245,6 +262,7 @@ class _Entry:
         self.status = 200
         self.ts = time.monotonic()
         self.error = False
+        self.served = 0.0   # monotonic ts of the first serve (0 = not yet)
 
 
 def _prefetch_one(url: str, mode: str, entry: _Entry):
@@ -253,8 +271,21 @@ def _prefetch_one(url: str, mode: str, entry: _Entry):
         # Tight budget: a live segment only exists for ~10-20 s, and a worker
         # stuck on one stalled download starves every other stream. Better to
         # fail fast and let the next playlist refresh retry.
-        r = _fetch(url, mode, tries=2, timeout=(5, 10))
-        entry.data = r.content
+        limited = ratelimit.DOWNLOAD.active
+        r = _fetch(url, mode, tries=2, timeout=(5, 10), stream=limited)
+        if limited:
+            # Download speed limit: read in chunks so the cap paces the actual
+            # transfer (not just the long-run average after whole segments).
+            buf = bytearray()
+            try:
+                for chunk in r.iter_content(65536):
+                    ratelimit.DOWNLOAD.consume(len(chunk))
+                    buf += chunk
+            finally:
+                r.close()
+            entry.data = bytes(buf)
+        else:
+            entry.data = r.content
         entry.status = r.status_code
         entry.ctype = r.headers.get("Content-Type", "application/octet-stream")
         _count(len(entry.data))
@@ -294,6 +325,9 @@ def _track_media_playlist(text: str, base_url: str, mode: str, key: str):
             durs.append(last_dur)
     if not segs:
         return  # master playlist or empty — nothing to do
+    if _TILE_LABEL.match(key):
+        _track_tile_playlist(segs, mode)
+        return
     known = [d for d in durs if d > 0]
     avg = (sum(known) / len(known)) if known else 2.0
 
@@ -312,6 +346,11 @@ def _track_media_playlist(text: str, base_url: str, mode: str, key: str):
 
         # _cache_bytes is maintained incrementally; expired entries are pruned
         # by the janitor thread — no O(cache) work under the lock per refresh.
+        # At the cap, make room (already-served first) instead of switching
+        # prefetch off — suspended prefetch is what made every recording lose
+        # segments at once.
+        if _cache_bytes >= _CACHE_MAX_BYTES:
+            _evict_locked(int(_CACHE_MAX_BYTES * 0.8))
         if _cache_bytes < _CACHE_MAX_BYTES:
             for u in segs:
                 if u not in _cache and u not in _fetched:
@@ -335,6 +374,45 @@ def _track_media_playlist(text: str, base_url: str, mode: str, key: str):
             pass
 
 
+def _tiles_active() -> bool:
+    """True while any Player tile has polled a playlist recently."""
+    return time.monotonic() - _tile_seen < _TILE_ACTIVE_WINDOW
+
+
+def _evict_locked(target: int):
+    """Free cache bytes down to `target` (state lock held). Already-served
+    segments go first, oldest first, then the oldest completed-but-unserved
+    ones. In-flight entries are never touched — their worker still owns the
+    byte accounting."""
+    global _cache_bytes
+    done = [(u, e) for u, e in _cache.items()
+            if e.event.is_set() and not e.error]
+    done.sort(key=lambda it: (not it[1].served, it[1].served or it[1].ts))
+    for u, e in done:
+        if _cache_bytes <= target:
+            break
+        if _cache.pop(u, None) is e:
+            _cache_bytes -= len(e.data)
+
+
+def _track_tile_playlist(segs: list, mode: str):
+    """A Player tile polled a media playlist: prefetch only its newest few
+    segments, on the tiles' own pool and only while the cache has headroom.
+    No gap accounting — a tile falling behind is not a recording problem."""
+    global _tile_seen
+    _tile_seen = time.monotonic()
+    submit = []
+    with _state_lock:
+        if _cache_bytes < _CACHE_MAX_BYTES * _TILE_CACHE_FRAC:
+            for u in segs[-_TILE_PREFETCH_SEGS:]:
+                if u not in _cache and u not in _fetched:
+                    e = _Entry()
+                    _cache[u] = e
+                    submit.append((u, e))
+    for u, e in submit:
+        _tile_executor.submit(_prefetch_one, u, mode, e)
+
+
 def _janitor_loop():
     """Prune expired cache entries / fetched-URL records on a fixed cadence.
     Pruning used to happen only inside playlist refreshes — O(cache) work
@@ -342,11 +420,14 @@ def _janitor_loop():
     (no more refreshes) the full cache stayed in RAM indefinitely."""
     global _cache_bytes
     while True:
-        time.sleep(15)
+        time.sleep(_JANITOR_EVERY)
         now = time.monotonic()
         with _state_lock:
             for u, e in list(_cache.items()):
-                if e.event.is_set() and now - e.ts > _ENTRY_TTL:
+                if not e.event.is_set():
+                    continue
+                if (e.served and now - e.served > _SERVED_RETAIN) \
+                        or now - e.ts > _ENTRY_TTL:
                     _cache.pop(u, None)
                     if not e.error:
                         _cache_bytes -= len(e.data)
@@ -374,11 +455,11 @@ def _headers(mode: str) -> dict:
 
 
 def _fetch(url: str, mode: str = "chaturbate", tries: int = 3,
-           timeout=20) -> requests.Response:
+           timeout=20, stream: bool = False) -> requests.Response:
     last_exc = None
     for _ in range(tries):
         try:
-            return _get(url, mode, timeout)
+            return _get(url, mode, timeout, stream)
         except requests.RequestException as exc:
             last_exc = exc
     raise last_exc
@@ -466,7 +547,10 @@ def _rewrite_playlist(text: str, base_url: str, mode: str = "chaturbate",
         # Pin the highest-bitrate variant (within the quality cap, if any)
         # on the master playlist.
         cap = 0
-        if _quality_cb:
+        tile = _TILE_LABEL.match(label or "")
+        if tile:
+            cap = int(tile.group(1))   # Player tile: cap rides in its label
+        elif _quality_cb:
             try:
                 cap = int(_quality_cb(label) or 0)
             except Exception:
@@ -565,8 +649,15 @@ class _Handler(BaseHTTPRequestHandler):
                 if entry.event.is_set() and not entry.error:
                     global _cache_bytes
                     with _state_lock:
-                        # ffmpeg fetches each URL once — drop after serving
-                        if _cache.pop(target, None) is entry:
+                        if _tiles_active():
+                            # A tile and ffmpeg may both want this segment:
+                            # keep it briefly (janitor / eviction drop it) so
+                            # the second one doesn't download it again.
+                            if not entry.served:
+                                entry.served = time.monotonic()
+                        elif _cache.pop(target, None) is entry:
+                            # No tiles: ffmpeg fetches each URL once — drop
+                            # after serving.
                             _cache_bytes -= len(entry.data)
                     self._send(entry.status, entry.ctype, entry.data)
                     return
@@ -641,6 +732,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             for chunk in r.iter_content(65536):
+                ratelimit.DOWNLOAD.consume(len(chunk))
                 _count(len(chunk))
                 self.wfile.write(chunk)
             if 200 <= r.status_code < 300:

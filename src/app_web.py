@@ -39,6 +39,7 @@ import links as model_links
 import recorder as recorder_mod
 import cb_relay
 import netproxy
+import ratelimit
 import settings as settings_mod
 from recorder import StreamRecorder, ModelStatus
 from settings import load_settings, save_settings, save_pipeline_settings
@@ -155,6 +156,7 @@ class WebCore:
     def __init__(self):
         self.settings = load_settings()
         netproxy.configure(self.settings.proxy_default, self.settings.proxies)
+        ratelimit.configure(self.settings.dl_limit_mbps, self.settings.ul_limit_mbps)
         self.recorder = StreamRecorder()
         self.recorder.output_dir     = self.settings.output_dir
         self.recorder.max_size_mb    = self.settings.max_size_mb
@@ -1026,14 +1028,18 @@ class WebCore:
         self._log_add(detail, "warn")
         return {"ok": False, "error": self._PREVIEW_SHORT}
 
-    def preview_resolve(self, name: str, site: str, force_embedded: bool = False) -> dict:
+    def preview_resolve(self, name: str, site: str, force_embedded: bool = False,
+                        quality: int = 0) -> dict:
         """Blocking (called on a js_api thread): resolve upstream, wrap in the
         relay. External mode spawns the player; embedded returns the localhost
         URL for the in-page hls.js player. force_embedded is used by the
         Player tab, which always needs the in-page URL regardless of the
         general Preview mode setting (that setting only governs the
-        right-click Preview action)."""
+        right-click Preview action). `quality` is the Player tile's variant
+        height cap in px (0 = Max); it only applies with force_embedded and
+        never touches the recording of the same model."""
         key = f"{site}:{name.lower()}"
+        tile_cap = max(0, int(quality or 0)) if force_embedded else None
         cfg = self.recorder.models.get(key)
         status = cfg.status if cfg else None
         if status not in (ModelStatus.ONLINE, ModelStatus.RECORDING):
@@ -1051,7 +1057,8 @@ class WebCore:
             max_age = recorder_mod.PREVIEW_URL_MAX_AGE
             if site == "stripchat":
                 import stripchat_native
-                upstream = stripchat_native.resolve(name, max_age=max_age)
+                upstream = stripchat_native.resolve(
+                    name, max_age=max_age, max_height=tile_cap or 0)
             else:
                 upstream = recorder_mod.get_stream_url(site, name, max_age=max_age)
         except Exception as e:
@@ -1062,8 +1069,13 @@ class WebCore:
                 + ("(Stripchat private/needs browser path?)"
                    if site == "stripchat" else "(offline?)"))
         try:
+            # Player tiles get their own label namespace ("tile@<cap>:…"): the
+            # relay then picks their variant from the label and keeps their
+            # gap accounting / quality auto-downgrade apart from recordings.
+            label = (f"tile@{tile_cap}:{site}:{name}" if tile_cap is not None
+                     else f"{site}:{name}")
             url = cb_relay.wrap(upstream, recorder_mod.USER_AGENT, mode=site,
-                                label=f"{site}:{name}")
+                                label=label)
         except Exception as e:
             return self._preview_unavailable(f"Preview relay error: {e}")
         mode = "embedded" if force_embedded else (self.settings.preview_mode or "external").lower()
@@ -1500,17 +1512,24 @@ class WebCore:
                 "saved": self._saved_key(name, site) in self._saved_data,
                 "q": self._model_q.get(key, 0),
                 "vip": key.lower() in self._vip,
-                "aka": model_links.aka(links_copy, key.lower()),
+                "aka": model_links.aka(links_copy, key.lower()) if links_copy else [],
             })
         # Saved statuses: only non-offline models are sent; absence = offline.
+        # Walk only the (few) non-offline recorder entries and look each one up
+        # in the saved list — sids are always "saved:<site>:<name.lower()>",
+        # so this is the same result as scanning every saved model per tick.
         saved_status = {}
-        with self._rows_lock:
-            saved_snapshot = list(self._saved_data.items())
-        for sid, d in saved_snapshot:
-            key = f"{d['site']}:{d['name'].lower()}"
-            cfg = self.recorder.models.get(key)
-            if not cfg or cfg.status == ModelStatus.OFFLINE:
-                continue
+        live = [(k, c) for k, c in list(self.recorder.models.items())
+                if c and c.status != ModelStatus.OFFLINE]
+        saved_snapshot = []
+        if live:
+            with self._rows_lock:
+                for k, c in live:
+                    sid = f"saved:{k}"
+                    d = self._saved_data.get(sid)
+                    if d and f"{d['site']}:{d['name'].lower()}" == k:
+                        saved_snapshot.append((sid, d, k, c))
+        for sid, d, key, cfg in saved_snapshot:
             st = _STATUS_STR.get(cfg.status, "offline")
             fname = ""
             size = ""
@@ -1885,10 +1904,29 @@ class Bridge:
     def preview(self, name, site):
         return self._core.preview_resolve(str(name), str(site))
 
-    def preview_embedded(self, name, site):
+    def preview_embedded(self, name, site, quality=0):
         # Player tab tiles: always embedded in-page, regardless of the
         # general Preview mode setting (which only governs right-click Preview).
-        return self._core.preview_resolve(str(name), str(site), force_embedded=True)
+        # `quality`: tile video height cap in px, 0 = Max.
+        try:
+            q = max(0, int(quality or 0))
+        except (TypeError, ValueError):
+            q = 0
+        return self._core.preview_resolve(str(name), str(site),
+                                          force_embedded=True, quality=q)
+
+    def set_player_quality(self, height=0):
+        """Player toolbar quality dropdown — remembered across runs."""
+        try:
+            h = int(height or 0)
+        except (TypeError, ValueError):
+            h = 0
+        if h not in (0, 720, 480, 360):
+            h = 0
+        c = self._core
+        c.settings.player_quality = h
+        c._persist_models()
+        return {"ok": True, "player_quality": h}
 
     def client_log(self, msg):
         # In-page playback errors (hls.js etc.) are invisible from Python —
@@ -1922,7 +1960,9 @@ class Bridge:
         c.after(0, _do)
         return {"ok": True}
 
-    def saved_to_recorder(self, sids):
+    def saved_to_recorder(self, sids, auto=False):
+        """Add saved models to the Recorder; auto=True also switches AUTO on
+        (including for models already in the Recorder)."""
         c = self._core
         def _do():
             added = 0
@@ -1930,23 +1970,30 @@ class Bridge:
                 _, site, name = str(sid).split(":", 2)
                 key = f"{site}:{name}"
                 with c._rows_lock:
-                    if key in c._rows:
-                        continue
-                    c._rows[key] = True
+                    is_new = key not in c._rows
+                    if is_new:
+                        c._rows[key] = True
+                if auto:
+                    c._auto_rec[key] = True
+                if not is_new:
+                    continue
                 c.recorder.add_model(name, site, "recorder", quiet=True)
                 c._auto_rec.setdefault(key, False)
                 audit.log_event("recorder_add", name=name, site=site,
                                 source="ui")
                 added += 1
-            if added:
+            if added or auto:
                 c._persist_models()
-                c._log_add(f"Added {added} model(s) to Recorder", "accent")
+            if added:
+                c._log_add(f"Added {added} model(s) to Recorder"
+                           + (" (AUTO on)" if auto else ""), "accent")
         c.after(0, _do)
         return {"ok": True}
 
-    def saved_record(self, sids):
+    def saved_record(self, sids, auto=False):
         """Add each saved model to the Recorder and immediately start recording
-        (right-click → Add to Recorder & Start Recording, for live models)."""
+        (right-click → Add to Recorder & Start Recording, for live models).
+        auto=True also switches AUTO on (… & Start Recording + AUTO ON)."""
         c = self._core
         def _do():
             n = 0
@@ -1962,11 +2009,14 @@ class Bridge:
                     c._auto_rec.setdefault(key, False)
                     audit.log_event("recorder_add", name=name, site=site,
                                     source="ui")
+                if auto:
+                    c._auto_rec[key] = True
                 c._launch_recording(name, site)
                 n += 1
             if n:
                 c._persist_models()
-                c._log_add(f"Added + started recording {n} model(s)", "accent")
+                c._log_add(f"Added + started recording {n} model(s)"
+                           + (" (AUTO on)" if auto else ""), "accent")
         c.after(0, _do)
         return {"ok": True}
 
@@ -2160,6 +2210,10 @@ class Bridge:
             "preview_engine": s.preview_engine,
             "preview_player_path": s.preview_player_path,
             "max_player_tiles": s.max_player_tiles,
+            "player_quality": s.player_quality,
+            "dl_limit_mbps": s.dl_limit_mbps,
+            "ul_limit_mbps": s.ul_limit_mbps,
+            "gpu_flags": s.gpu_flags,
             "api_token": s.api_token,
             "proxy_default": s.proxy_default,
             "proxies": {site: s.proxies.get(site, "") for site in netproxy.SITES},
@@ -2211,6 +2265,15 @@ class Bridge:
         s.preview_engine        = str(p.get("preview_engine", s.preview_engine))
         s.preview_player_path   = str(p.get("preview_player_path", "")).strip()
         s.max_player_tiles      = max(1, min(100, _int(p.get("max_player_tiles"), s.max_player_tiles) or s.max_player_tiles))
+        s.gpu_flags             = bool(p.get("gpu_flags", s.gpu_flags))
+        s.dl_limit_mbps         = max(0.0, _float(p.get("dl_limit_mbps"), 0.0) or 0.0)
+        s.ul_limit_mbps         = max(0.0, _float(p.get("ul_limit_mbps"), 0.0) or 0.0)
+        ul_was_on = ratelimit.UPLOAD.active
+        ratelimit.configure(s.dl_limit_mbps, s.ul_limit_mbps)
+        # Upload cap switched on/off: re-route connected Telegram clients
+        # (a changed value applies live without that).
+        if ratelimit.UPLOAD.active != ul_was_on and getattr(c, "pipeline", None):
+            c.pipeline.apply_upload_limit()
         s.api_token             = str(p.get("api_token", s.api_token)).strip()
         # Proxies: a bad address keeps the previous value and is reported in
         # the saved note — never a dialog, never a crash.
@@ -2264,6 +2327,28 @@ class Bridge:
             note = "VLC isn't installed — preview falls back to another engine."
         c._log_add("Settings saved." + (f" ({note})" if note else ""), "success")
         return {"ok": True, "note": note}
+
+    def perf_snapshot(self, seconds=10):
+        """Settings → Performance snapshot. Blocks for `seconds` on the
+        JS-API thread; no dialogs. Report is also saved next to the logs."""
+        try:
+            import perfprobe
+            text = perfprobe.capture(seconds)
+        except Exception as e:
+            return {"ok": False, "error": str(e), "text": "", "path": ""}
+        path = ""
+        try:
+            d = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                             "Scr33nX")
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(d, time.strftime("perf_snapshot_%Y%m%d_%H%M%S.txt"))
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text + "\n")
+        except OSError:
+            path = ""
+        self._core._log_add("Performance snapshot captured"
+                            + (f" → {path}" if path else "."))
+        return {"ok": True, "text": text, "path": path}
 
     def proxy_test(self, site="", proxy=""):
         """Settings → Proxy → Test. Runs on the JS-API thread; no dialogs."""
@@ -2458,6 +2543,17 @@ def main():
     window.events.shown += lambda: threading.Timer(
         0.4, _apply_window_icon, args=("Scr33nX",)).start()
 
+    if core.settings.gpu_flags:
+        # Experimental (Settings → GPU / rendering flags). WebView2 reads this
+        # variable when it creates its environment, i.e. inside start().
+        flags = ("--ignore-gpu-blocklist --enable-gpu-rasterization "
+                 "--enable-zero-copy --disable-renderer-backgrounding "
+                 "--disable-background-timer-throttling "
+                 "--disable-backgrounding-occluded-windows "
+                 "--disable-features=CalculateNativeWinOcclusion,ElasticOverscroll")
+        prev = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "")
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (prev + " " + flags).strip()
+        log.info("WebView2 experimental GPU/rendering flags enabled")
     try:
         webview.start(gui="edgechromium", debug=("--debug" in sys.argv))
     except Exception as e:
