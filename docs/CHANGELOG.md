@@ -14,6 +14,13 @@ grouped by date / milestone.
 - **Extension: hover mini player.** Rest the mouse on the thumbnail of a model that's online or recording in your Recorder and a small live player opens next to it (click to toggle sound). Turn on **Preview any model** to also preview models that aren't in your Recorder (slower to start; off by default). Set it up in the add-on popup under **⚙ Mini player**: on/off, preview any model, size, hover delay (0.5–3 s), quality and start muted. Needs the default (web) UI. Firefox users: also grant the `127.0.0.1` permission in `about:addons`.
 - **Extension: highlight filter.** In the add-on popup, pick any mix of **● REC**, **Online**, **★5–★1** and **No rank** — every other thumbnail on the browse pages goes dark, so the ones you picked stand out.
 - **API: `GET /preview`** returns the live stream link for an online/recording Recorder model (used by the mini player).
+- **Chaturbate protection** (**⚙ Settings → 🛡️ Chaturbate protection**). Chaturbate blocks an IP that hits its video servers too hard, and endless retries kept the block going.
+  - **Auto-pause:** when several different models are refused (403) within a short window, Scr33nX pauses Chaturbate. No new recordings start, and Player tiles show "Chaturbate paused" instead of retrying.
+  - **Resuming:** after the pause (2 minutes by default) one stream is tested. If it plays, Chaturbate resumes; if not, the next pause is twice as long, up to 30 minutes.
+  - **Fallback proxy (optional):** Chaturbate video goes through this proxy during a pause instead of stopping.
+  - **Controls:** a live status line and a **Resume now** button.
+  - **Gradual start:** Chaturbate recordings start at most N per minute (default 10), so opening the app or a burst of restarts doesn't send 40 requests at once. After a pause, recordings always come back gradually.
+  - Everything can be switched off or tuned.
 
 ### Changed
 - **Extension: easier-to-see thumbnail badges.** On cam-site browse pages the **REC** badge is now bigger, white-bordered and pulses with a glow instead of fading, so it stands out on any thumbnail. ON/OFF badges are a bit larger too.

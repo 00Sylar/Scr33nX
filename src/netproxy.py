@@ -20,6 +20,8 @@ import urllib.parse
 
 import requests
 
+import cb_guard
+
 logger = logging.getLogger(__name__)
 
 SITES = ("chaturbate", "stripchat", "camsoda", "myfreecams")
@@ -85,12 +87,18 @@ def configure(default: str, sites: dict | None):
         _sites.update(clean)
 
 
-def proxy_url(site: str, kind: str = "media") -> str | None:
+def proxy_url(site: str, kind: str = "media", guard: bool = True) -> str | None:
     """Proxy URL for `site`, or None for a direct connection. `kind` is
-    "api" (lookups) or "media" (video); see the module docstring."""
+    "api" (lookups) or "media" (video); see the module docstring. While the
+    Chaturbate guard has tripped with a fallback proxy set, Chaturbate video
+    uses that instead (guard=False skips it — the guard's own probe)."""
     site = (site or "").lower()
     if site == "chaturbate" and kind == "api":
         return None
+    if site == "chaturbate" and guard:
+        fb = cb_guard.fallback_proxy()
+        if fb:
+            return fb
     with _lock:
         v = _sites.get(site, "")
         d = _default
@@ -99,9 +107,9 @@ def proxy_url(site: str, kind: str = "media") -> str | None:
     return v or d or None
 
 
-def requests_proxies(site: str, kind: str = "media") -> dict | None:
+def requests_proxies(site: str, kind: str = "media", guard: bool = True) -> dict | None:
     """`proxies=` argument for requests, or None (→ requests' default)."""
-    u = proxy_url(site, kind)
+    u = proxy_url(site, kind, guard)
     return {"http": u, "https": u} if u else None
 
 

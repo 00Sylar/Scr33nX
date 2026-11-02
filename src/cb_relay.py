@@ -26,6 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
 
+import cb_guard
 import netproxy
 import ratelimit
 
@@ -141,17 +142,47 @@ def _cb_edge_get(url: str, headers: dict, timeout, stream: bool = False
     raise last_exc
 
 
-def _get(url: str, mode: str, timeout, stream: bool = False) -> requests.Response:
+def _get(url: str, mode: str, timeout, stream: bool = False,
+         guard: bool = True) -> requests.Response:
     """One upstream GET for `mode` (family-adaptive for Chaturbate, or via the
-    site's proxy when one is set in Settings)."""
+    site's proxy when one is set in Settings). guard=False ignores the
+    Chaturbate guard's fallback proxy (its probe tests the normal route)."""
     headers = _headers(mode)
-    proxies = netproxy.requests_proxies(mode)   # user-set proxy for this site
+    proxies = netproxy.requests_proxies(mode, guard=guard)   # user-set proxy for this site
     if mode == "chaturbate" and not proxies:
         return _cb_edge_get(url, headers, timeout, stream)
     # Through a proxy the proxy picks the route, so the IP-family fallback
     # is skipped (a 403 is returned as is).
     return _session.get(url, timeout=timeout, headers=headers, stream=stream,
                         proxies=proxies)
+
+
+def probe_chaturbate(names: list) -> bool | None:
+    """cb_guard's probe: mint one token (API, never gated) and fetch that
+    master over the normal route — the Chaturbate proxy if one is set, else
+    direct; never the guard's fallback. Tries the models that were refused
+    first (same edges), then the top public room. True = 2xx, False =
+    refused, None = no live room to test with."""
+    import recorder   # lazy: recorder imports this module
+    cands = list(names[:3])
+    try:
+        r = recorder._cb_get(recorder._CB_ROOMLIST_URL,
+                             params={"limit": 3, "offset": 0}, timeout=15)
+        cands += [x["username"] for x in (r.json().get("rooms") or [])[:2]]
+    except Exception:
+        pass
+    for name in cands:
+        hls, _room = recorder._fetch_chaturbate_once(name)
+        if not hls:
+            continue
+        try:
+            r = _get(hls, "chaturbate", 15, guard=False)
+        except requests.RequestException:
+            return False
+        _count(len(r.content))
+        logger.info("[CB guard] probe %s: HTTP %s", name, r.status_code)
+        return 200 <= r.status_code < 300
+    return None
 
 
 # ── Bandwidth accounting ──────────────────────────────────────────────────────
@@ -664,10 +695,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._proxy_stream(target, mode)
             return
 
+        guarded = mode == "chaturbate" and qs.get("e") == ["1"]
         text = _master_cached(target) if mode == "chaturbate" else None
         if text is not None:
             status = 200
         else:
+            if guarded and cb_guard.paused_for():
+                # Chaturbate is refusing us: don't spend another request on
+                # the edge (each one prolongs the block). 503 ends this new
+                # ffmpeg / tile; they retry once the guard resumes. Media
+                # playlists of running recordings aren't gated.
+                self._send(503, "text/plain", b"Chaturbate paused")
+                return
             try:
                 r = _fetch(target, mode)
             except Exception:
@@ -677,14 +716,19 @@ class _Handler(BaseHTTPRequestHandler):
             status = r.status_code
             text = r.content.decode("utf-8", "replace")
             if mode == "chaturbate":
+                name = label.rsplit(":", 1)[-1]
                 if status == 200 and "#EXT-X-STREAM-INF" in text:
                     _master_store(target, text)
+                    if guarded:
+                        cb_guard.report_master(name, True)
                 elif status == 403:
                     # Token already spent — replay an older copy; its session
                     # is still good if a recording keeps it polled.
                     old = _master_cached(target, _MASTER_TTL)
                     if old is not None:
                         status, text = 200, old
+                    elif guarded:
+                        cb_guard.report_master(name, False)
         # Same advert markers stripchat_native.resolve() rejects at start;
         # mid-recording the CDN swaps a live playlist for this loop when the
         # model goes offline. 404 so ffmpeg stops instead of recording ads.
@@ -764,4 +808,6 @@ def wrap(url: str, user_agent: str | None = None,
                 target=_janitor_loop, daemon=True,
                 name="relay-janitor",
             ).start()
-    return _wrap_url(url, mode, label)
+    # e=1 marks the entry (master) URL; the playlists it lists are wrapped by
+    # _rewrite_playlist without it — only entry fetches are gated by cb_guard.
+    return _wrap_url(url, mode, label) + "&e=1"

@@ -16,6 +16,7 @@ import subprocess
 import requests
 import logging
 
+import cb_guard
 import netproxy
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _futures_wait
 from datetime import datetime
@@ -743,6 +744,7 @@ class StreamRecorder:
         cb_relay.set_advert_callback(self._on_relay_advert)
 
         self._lock    = threading.Lock()
+        self._cb_queued: set = set()   # Chaturbate starts waiting on cb_guard
         # Per-group monitor flags — one thread per group ("recorder", "saved")
         self._running: dict[str, bool] = {"recorder": False, "saved": False}
         # Always-on session watcher — handles split/stall/exit even when the
@@ -966,7 +968,7 @@ class StreamRecorder:
         for g in groups:
             self._log(f"Monitor [{g}] stopped.")
 
-    def start_recording(self, name: str, site: str) -> bool:
+    def start_recording(self, name: str, site: str, _admitted: bool = False) -> bool:
         key = f"{site}:{name.lower()}"
         with self._lock:
             cfg = self.models.get(key)
@@ -975,6 +977,16 @@ class StreamRecorder:
             if cfg.session:
                 self._log(f"Already recording {name}")
                 return False
+            if key in self._cb_queued:
+                return True                 # already waiting for a slot
+            # Chaturbate guard (pause / launch throttle): queue the start on
+            # its own thread (the launch pool must not wait) and leave the
+            # status alone — setting ONLINE would re-fire auto-rec and spin.
+            if site == "chaturbate" and not _admitted and not cb_guard.admit(name)[0]:
+                self._cb_queued.add(key)
+                threading.Thread(target=self._cb_queued_start, args=(cfg, key),
+                                 daemon=True, name=f"cb-queue-{name}").start()
+                return True
             self._set_status(cfg, ModelStatus.CHECKING, "")
 
         # Ensure ffmpeg is available (may not be set if monitor is off)
@@ -1001,9 +1013,29 @@ class StreamRecorder:
         self._begin_recording(cfg, url)
         return True
 
+    def _cb_queued_start(self, cfg: ModelConfig, key: str):
+        """A Chaturbate start the guard held back: wait for a slot, then start
+        it — unless it was stopped, removed or started some other way."""
+        while True:
+            ok, wait = cb_guard.admit(cfg.name)
+            if ok:
+                break
+            time.sleep(min(max(wait, 2.0), 15.0))
+            with self._lock:
+                if (key not in self._cb_queued or cfg.session
+                        or self.models.get(key) is not cfg):
+                    self._cb_queued.discard(key)
+                    return
+        with self._lock:
+            if key not in self._cb_queued:
+                return                      # stopped while the slot came up
+            self._cb_queued.discard(key)
+        self.start_recording(cfg.name, cfg.site, _admitted=True)
+
     def stop_recording(self, name: str, site: str):
         key = f"{site}:{name.lower()}"
         with self._lock:
+            self._cb_queued.discard(key)    # cancel a queued Chaturbate start
             cfg = self.models.get(key)
             if not cfg or not cfg.session:
                 return
@@ -1022,6 +1054,7 @@ class StreamRecorder:
         """Force-stop every active download on every site without touching
         the monitor threads. Returns how many sessions were stopped."""
         with self._lock:
+            self._cb_queued.clear()         # queued Chaturbate starts too
             victims = []
             tracked_procs = set()
             for cfg in self.models.values():
@@ -1785,6 +1818,16 @@ class StreamRecorder:
                 # Another recording may have been started while we waited
                 if c.session:
                     return
+                # Chaturbate guard: wait for a launch slot / the pause to end
+                # (this thread is per-model, so waiting here blocks nothing).
+                while c.site == "chaturbate":
+                    ok, wait = cb_guard.admit(c.name)
+                    if ok:
+                        break
+                    time.sleep(min(max(wait, 2.0), 15.0))
+                    if (c.stop_requested or c.session
+                            or self.models.get(f"{c.site}:{c.name}") is not c):
+                        return
                 # Re-resolve the URL — after an ffmpeg exit the old one is
                 # usually expired, and starting on a stale URL just burns a
                 # restart attempt on a guaranteed failure. Retry once.

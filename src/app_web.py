@@ -36,6 +36,7 @@ from app import (_ApiHandler, _ApiServer, APP_VERSION, GITHUB_REPO, _API_PORT,
 import audit
 import links as model_links
 import recorder as recorder_mod
+import cb_guard
 import cb_relay
 import netproxy
 import ratelimit
@@ -156,6 +157,9 @@ class WebCore:
         self.settings = load_settings()
         netproxy.configure(self.settings.proxy_default, self.settings.proxies)
         ratelimit.configure(self.settings.dl_limit_mbps, self.settings.ul_limit_mbps)
+        cb_guard.set_hooks(on_event=self._cb_guard_event,
+                           probe=cb_relay.probe_chaturbate)
+        cb_guard.apply_settings(self.settings)
         self.recorder = StreamRecorder()
         self.recorder.output_dir     = self.settings.output_dir
         self.recorder.max_size_mb    = self.settings.max_size_mb
@@ -332,6 +336,13 @@ class WebCore:
             self._log_add(("Added to" if add else "Removed from") +
                           f" VIP list: {len(keys)} model(s)",
                           "accent" if add else "warn")
+
+    def _cb_guard_event(self, msg: str, kind: str):
+        """Chaturbate guard events → Activity log; trips/resumes also toast."""
+        self._log_add(f"[Chaturbate guard] {msg}", kind, echo=False)
+        if kind in ("error", "accent"):
+            self._cb_notif("Chaturbate paused" if kind == "error"
+                           else "Chaturbate resumed", msg)
 
     def _launch_recording(self, name: str, site: str):
         key = f"{site}:{name}"
@@ -1049,6 +1060,15 @@ class WebCore:
                 f"Preview: {name} ({site}) is not online "
                 f"(status={_STATUS_STR.get(status, 'offline')}) — preview only "
                 "works for online or recording models.")
+        if site == "chaturbate":
+            wait = cb_guard.paused_for()
+            if wait:
+                # No log line: every open tile asks again each retry cycle.
+                mins = max(1, round(wait / 60))
+                return {"ok": False, "paused_ms": int(wait * 1000),
+                        "tile_msg": f"Chaturbate paused — check in ~{mins}m",
+                        "error": "Chaturbate is paused (it refused this "
+                                 "connection) — see Settings → Chaturbate protection."}
         title = f"{name} ({site})"
         self._log_add(f"Preview: resolving {title}…")
         try:
@@ -2221,6 +2241,14 @@ class Bridge:
             "api_token": s.api_token,
             "proxy_default": s.proxy_default,
             "proxies": {site: s.proxies.get(site, "") for site in netproxy.SITES},
+            "cb_guard_enabled": s.cb_guard_enabled,
+            "cb_guard_trip_models": s.cb_guard_trip_models,
+            "cb_guard_trip_window": s.cb_guard_trip_window,
+            "cb_guard_first_pause_min": s.cb_guard_first_pause_min,
+            "cb_guard_max_pause_min": s.cb_guard_max_pause_min,
+            "cb_guard_fallback_proxy": s.cb_guard_fallback_proxy,
+            "cb_throttle_enabled": s.cb_throttle_enabled,
+            "cb_throttle_per_min": s.cb_throttle_per_min,
             "quality_options": [{"label": l, "height": h}
                                 for l, h in QUALITY_OPTIONS.items()],
         }
@@ -2300,6 +2328,22 @@ class Bridge:
                 else:
                     s.proxies.pop(site, None)
         netproxy.configure(s.proxy_default, s.proxies)
+        # Chaturbate protection. Older pages don't send these keys — keep the
+        # current values then (bool(None) would silently switch it off).
+        if "cb_guard_enabled" in p:
+            s.cb_guard_enabled = bool(p.get("cb_guard_enabled"))
+            s.cb_throttle_enabled = bool(p.get("cb_throttle_enabled"))
+            s.cb_guard_trip_models = max(2, min(50, _int(p.get("cb_guard_trip_models"), s.cb_guard_trip_models) or 2))
+            s.cb_guard_trip_window = max(10, min(3600, _int(p.get("cb_guard_trip_window"), s.cb_guard_trip_window) or 10))
+            s.cb_guard_first_pause_min = max(0.5, min(240.0, _float(p.get("cb_guard_first_pause_min"), s.cb_guard_first_pause_min) or 0.5))
+            s.cb_guard_max_pause_min = max(s.cb_guard_first_pause_min, min(1440.0, _float(p.get("cb_guard_max_pause_min"), s.cb_guard_max_pause_min) or 0.5))
+            s.cb_throttle_per_min = max(1, min(600, _int(p.get("cb_throttle_per_min"), s.cb_throttle_per_min) or 1))
+            norm, err = netproxy.validate(p.get("cb_guard_fallback_proxy"))
+            if err or norm == netproxy.DIRECT:
+                proxy_errs.append(f"fallback proxy: {err or 'use a real address'}")
+            else:
+                s.cb_guard_fallback_proxy = norm
+            cb_guard.apply_settings(s)
         c.recorder.quality_global = s.max_quality
         c.recorder.auto_downgrade_enabled = s.auto_downgrade_enabled
         c.recorder.playwright_fallback_enabled = s.playwright_fallback_enabled
@@ -2353,6 +2397,14 @@ class Bridge:
         self._core._log_add("Performance snapshot captured"
                             + (f" → {path}" if path else "."))
         return {"ok": True, "text": text, "path": path}
+
+    def cb_guard_status(self):
+        """Settings → Chaturbate protection: live status line."""
+        return cb_guard.status()
+
+    def cb_guard_resume(self):
+        """Settings → Chaturbate protection → Resume now."""
+        return cb_guard.resume_now()
 
     def proxy_test(self, site="", proxy=""):
         """Settings → Proxy → Test. Runs on the JS-API thread; no dialogs."""

@@ -695,3 +695,6 @@ input[type="range"]::-webkit-slider-thumb:hover { box-shadow: var(--shadow-sm), 
 .proxy-res { font-size: var(--fs-0); color: var(--text-3); min-height: 1em; }
 .proxy-res.ok { color: var(--ok); }
 .proxy-res.bad { color: var(--rec); }
+.cbg-status { font-size: var(--fs-1); color: var(--ok); }
+.cbg-status.bad { color: var(--rec); }
+.cbg-status.off { color: var(--text-3); }
