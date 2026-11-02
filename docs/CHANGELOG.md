@@ -10,6 +10,13 @@ grouped by date / milestone.
 
 ## [Unreleased]
 
+---
+
+## V2.10 — 2026-11-01
+
+**Live dashboard & self-healing Player.** The sidebar counts stay current on every
+tab, and Player tiles come back on their own after the window was minimized.
+
 ### Fixed
 - The sidebar dashboard (LIVE count and per-site REC / ONLINE / IDLE numbers) now
   updates live on every tab. It used to freeze until you opened the Recorder tab.
