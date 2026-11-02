@@ -429,6 +429,35 @@
               supports SOCKS/HTTP proxies without a username/password.</div>
           </div>
           <div class="card">
+            <h3>🛡️ Chaturbate protection</h3>
+            <div class="vip-hint" style="margin:0 0 10px">Chaturbate's video servers block an IP
+              that hits them too hard (every stream answers <b>403</b>). Retrying keeps the block
+              going, so Scr33nX backs off instead.</div>
+            <div class="cbg-status" id="cbg-status">…</div>
+            <div class="hrow" style="margin:6px 0 10px">
+              <button class="btn mini" id="cbg-resume" hidden>▶ Resume now</button>
+            </div>
+            <label class="toggle-row"><span class="switch" id="s-cbg"></span>⏸️ Auto-pause when Chaturbate refuses streams</label>
+            <div id="cbg-fields">
+              <div class="form-2col">
+                <div class="field"><label>Pause after (models refused)</label><input id="s-cbg-models"></div>
+                <div class="field"><label>…within (seconds)</label><input id="s-cbg-window"></div>
+                <div class="field"><label>First pause (minutes)</label><input id="s-cbg-first"></div>
+                <div class="field"><label>Longest pause (minutes)</label><input id="s-cbg-max"></div>
+              </div>
+              <div class="field"><label>Fallback proxy while paused <span style="color:var(--text-3)">(optional)</span></label>
+                <input id="s-cbg-proxy" spellcheck="false" placeholder="empty = just pause · e.g. socks5h://127.0.0.1:40000"></div>
+            </div>
+            <label class="toggle-row" style="margin-top:8px"><span class="switch" id="s-cbt"></span>🚦 Start Chaturbate recordings gradually</label>
+            <div class="field" id="cbt-fields"><label>Max starts per minute</label><input id="s-cbt-rate"></div>
+            <div class="vip-hint">While paused, no Chaturbate recording starts and Player tiles wait;
+              recordings still running keep going. After each pause one stream is tested: if it
+              plays, recordings come back a few at a time; if not, the next pause is twice as long.
+              With a <b>fallback proxy</b>, Chaturbate video goes through it during the pause
+              instead of stopping. The gradual start always applies for 5 minutes after a pause,
+              even when switched off.</div>
+          </div>
+          <div class="card">
             <h3>🔌 Local API</h3>
             <div class="field"><label>API token (optional — empty = no authentication)</label>
               <input id="s-api-token" spellcheck="false" placeholder="empty = any local app may control Scr33nX">

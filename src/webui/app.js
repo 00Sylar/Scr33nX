@@ -702,6 +702,16 @@ async function loadSettings() {
   document.querySelectorAll(".s-proxy-site").forEach(i => {
     i.value = (s.proxies || {})[i.dataset.site] || "";
   });
+  setSwitch("s-cbg", s.cb_guard_enabled);
+  $("s-cbg-models").value = s.cb_guard_trip_models;
+  $("s-cbg-window").value = s.cb_guard_trip_window;
+  $("s-cbg-first").value = s.cb_guard_first_pause_min;
+  $("s-cbg-max").value = s.cb_guard_max_pause_min;
+  $("s-cbg-proxy").value = s.cb_guard_fallback_proxy || "";
+  setSwitch("s-cbt", s.cb_throttle_enabled);
+  $("s-cbt-rate").value = s.cb_throttle_per_min;
+  updateCbgDim();
+  refreshCbGuard();
   playerMaxTiles = s.max_player_tiles;
   adoptPlayerQuality(s);
   runSystemCheck();
@@ -728,6 +738,36 @@ function updateLimitHint() {
 }
 $("s-dl-limit").addEventListener("input", updateLimitHint);
 $("s-ul-limit").addEventListener("input", updateLimitHint);
+// Settings → Chaturbate protection: dim fields of a switched-off part, and
+// keep the status line live while the Settings tab is open.
+function updateCbgDim() {
+  for (const [sw, box] of [["s-cbg", "cbg-fields"], ["s-cbt", "cbt-fields"]]) {
+    const on = $(sw).classList.contains("on");
+    $(box).classList.toggle("disabled", !on);
+    $(box).querySelectorAll("input").forEach(i => { i.disabled = !on; });
+  }
+}
+function showCbGuard(st) {
+  const el = $("cbg-status");
+  el.textContent = st.text + (st.tripped && st.last ? `  ·  ${st.last}` : "");
+  el.className = "cbg-status" + (st.tripped ? " bad" : st.enabled ? "" : " off");
+  $("cbg-resume").hidden = !st.tripped;
+}
+async function refreshCbGuard() {
+  if (!API) return;
+  try { showCbGuard(await API.cb_guard_status()); } catch (_) {}
+}
+setInterval(() => {
+  const p = document.querySelector('[data-panel="settings"]');
+  if (p && p.offsetParent !== null) refreshCbGuard();
+}, 5000);
+$("cbg-resume").addEventListener("click", async () => {
+  if (!API) return;
+  showCbGuard(await API.cb_guard_resume());
+  toast("Chaturbate resumed — recordings restart gradually.");
+});
+$("s-cbg").closest(".toggle-row").addEventListener("click", () => setTimeout(updateCbgDim, 0));
+$("s-cbt").closest(".toggle-row").addEventListener("click", () => setTimeout(updateCbgDim, 0));
 $("s-notif").closest(".toggle-row").addEventListener("click", () => setTimeout(updateNotifDim, 0));
 $("s-disk").closest(".toggle-row").addEventListener("click", () => setTimeout(updateDiskDim, 0));
 
@@ -786,7 +826,16 @@ $("s-save").addEventListener("click", async () => {
     proxy_default: $("s-proxy-default").value,
     proxies: Object.fromEntries([...document.querySelectorAll(".s-proxy-site")]
       .map(i => [i.dataset.site, i.value])),
+    cb_guard_enabled: $("s-cbg").classList.contains("on"),
+    cb_guard_trip_models: $("s-cbg-models").value,
+    cb_guard_trip_window: $("s-cbg-window").value,
+    cb_guard_first_pause_min: $("s-cbg-first").value,
+    cb_guard_max_pause_min: $("s-cbg-max").value,
+    cb_guard_fallback_proxy: $("s-cbg-proxy").value,
+    cb_throttle_enabled: $("s-cbt").classList.contains("on"),
+    cb_throttle_per_min: $("s-cbt-rate").value,
   });
+  refreshCbGuard();
   playerMaxTiles = Number($("s-player-max").value) || playerMaxTiles;
   renderPlayerTab();
   toast("✓ Settings saved" + (r.note ? ` — ${r.note}` : ""));
@@ -1988,9 +2037,13 @@ async function playTile(tileId, opts = {}) {
   // Quality changed while this resolve was in flight — redo at the new one.
   if (r.ok && q !== playerQuality) return playTile(tileId, opts);
   if (!r.ok) {
-    playerCooldownUntil.set(tileId, Date.now() + PLAYER_RETRY_MS);
-    setTileError(tileId, "no public stream — retrying…");
-    if (!opts.silent) toast(r.error || "Preview failed.", true);
+    // Chaturbate paused by its guard: wait longer (no network is used while
+    // paused, so ≤ 60 s keeps "Resume now" responsive) and don't toast —
+    // every open tile would.
+    const wait = r.paused_ms ? Math.min(Math.max(r.paused_ms, PLAYER_RETRY_MS), 60000) : PLAYER_RETRY_MS;
+    playerCooldownUntil.set(tileId, Date.now() + wait);
+    setTileError(tileId, r.tile_msg || "no public stream — retrying…");
+    if (!opts.silent && !r.paused_ms) toast(r.error || "Preview failed.", true);
     return;
   }
   playerCooldownUntil.delete(tileId);

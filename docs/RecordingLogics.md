@@ -199,6 +199,45 @@ Stripchat Playwright fallback gets it via the `SCR33NX_PROXY` env var read by
 Diagnosing next time: if the mint×fetch probe shows all-403 *and* a VPN/WARP
 exit fixes it, it's network-level — use a proxy; don't chase headers.
 
+**…or refuse one IP for hitting it too hard (2026-11-02).** ~40 recording
+starts a minute plus 14 Player tiles retrying every 30 s got the home IP 403'd
+on both families; a modem restart (new IPv4 + IPv6 prefix) played at once.
+Every retry mints a token and hits the edge again, so retrying prolongs it.
+`cb_guard.py` (Settings → Chaturbate protection) handles this:
+
+- **Detection** — the relay reports every *upstream* fetch of a CB *entry*
+  URL (`cb_relay.wrap` adds `&e=1`; the variant/audio playlists a master
+  lists are wrapped without it, so media-playlist polls are never gated or
+  reported) via `cb_guard.report_master`: 2xx = ok; 403 that no cached copy
+  could replace = refused (a fresh-cache hit or the old-copy replay reports
+  nothing). The
+  model name is the label's last part, so a tile and a recording count once.
+  `trip_models` different refused models within `trip_window` s trips it; any
+  upstream success clears the window (a block refuses everything).
+- **While tripped** — `paused_for()` > 0: the relay answers new CB entry
+  fetches 503 without touching the edge (cached masters, media playlists and
+  segments pass, so recordings that still work keep going);
+  `recorder.start_recording` doesn't start: it queues the start on a
+  per-model `_cb_queued_start` thread that waits in `admit()` and returns
+  True ("queued"), leaving the status untouched (setting ONLINE would re-fire
+  auto-rec at once and spin). `stop_recording` / STOP ALL cancel a queued
+  start. The `_delayed_restart` thread waits in `admit()` the same way;
+  `preview_resolve` returns `paused_ms` so tiles wait ≤ 60 s per retry
+  without a toast.
+- **Probe** — the `cb-guard` thread runs `cb_relay.probe_chaturbate` when the
+  pause ends: mints a token for a refused model (else the top public room)
+  and fetches its master over the normal route with `guard=False` (CB proxy
+  if set, else `_cb_edge_get`; never the fallback). 2xx closes; refused
+  doubles the pause (`first_pause` → `max_pause`); no live room → retry in
+  60 s. The step decays only after 30 min healthy, so a re-block during the
+  ramp doesn't flap at the shortest pause.
+- **Fallback proxy** — while tripped `netproxy.proxy_url("chaturbate")`
+  returns it (so nothing is gated); refusals through it trip
+  `_fallback_dead` → pause as normal.
+- **Launch throttle** — `admit()` is a token bucket (`per_min`/min, burst
+  `per_min/4`, min 2) for every CB recording start. It applies for
+  `RAMP_SECS` (5 min) after a close even when the throttle is switched off.
+
 ---
 
 ## 1b. Quality caps & auto-downgrade

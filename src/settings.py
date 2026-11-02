@@ -79,6 +79,14 @@ class AppSettings:
     api_token: str = ""                        # local API shared secret ("" = no auth, default)
     proxy_default: str = ""                    # outbound proxy for every site without its own ("" = direct)
     proxies: dict = None                       # {"chaturbate": "socks5h://host:port" | "direct", ...} per-site override
+    cb_guard_enabled: bool = True              # pause Chaturbate when its video servers refuse this connection
+    cb_guard_trip_models: int = 4              # ...after this many different models are refused
+    cb_guard_trip_window: int = 60             # ...within this many seconds
+    cb_guard_first_pause_min: float = 2.0      # first pause, minutes (doubles each failed check)
+    cb_guard_max_pause_min: float = 30.0       # longest pause, minutes
+    cb_guard_fallback_proxy: str = ""          # proxy for Chaturbate video while paused ("" = just pause)
+    cb_throttle_enabled: bool = True           # start Chaturbate recordings gradually
+    cb_throttle_per_min: int = 10              # max Chaturbate recording starts per minute
     models: List[dict] = None                  # [{name, site, auto_rec, max_q}, ...]
     saved_models: List[dict] = None            # [{name, site}, ...]  view-only list
     ranks: dict = None                         # "site:name" → 0-5 star rank
@@ -272,6 +280,18 @@ def load_settings() -> AppSettings:
     s.proxy_default = str(main.get("proxy_default", "") or "")
     s.proxies = {str(k): str(v) for k, v in (main.get("proxies") or {}).items()
                  if isinstance(v, str)} if isinstance(main.get("proxies"), dict) else {}
+    s.cb_guard_enabled = bool(main.get("cb_guard_enabled", s.cb_guard_enabled))
+    s.cb_throttle_enabled = bool(main.get("cb_throttle_enabled", s.cb_throttle_enabled))
+    s.cb_guard_fallback_proxy = str(main.get("cb_guard_fallback_proxy", "") or "")
+    for f, lo, hi in (("cb_guard_trip_models", 2, 50), ("cb_guard_trip_window", 10, 3600),
+                      ("cb_guard_first_pause_min", 0.5, 240), ("cb_guard_max_pause_min", 0.5, 1440),
+                      ("cb_throttle_per_min", 1, 600)):
+        default = getattr(s, f)
+        try:
+            v = type(default)(main.get(f, default))
+        except (TypeError, ValueError):
+            v = default
+        setattr(s, f, max(type(default)(lo), min(type(default)(hi), v)))
     s.models = main.get("models", [])
     s.saved_models = main.get("saved_models", [])
     s.ranks = main.get("ranks", {}) or {}
@@ -336,6 +356,14 @@ def save_settings(s: AppSettings):
         "api_token": s.api_token,
         "proxy_default": s.proxy_default,
         "proxies": s.proxies,
+        "cb_guard_enabled": s.cb_guard_enabled,
+        "cb_guard_trip_models": s.cb_guard_trip_models,
+        "cb_guard_trip_window": s.cb_guard_trip_window,
+        "cb_guard_first_pause_min": s.cb_guard_first_pause_min,
+        "cb_guard_max_pause_min": s.cb_guard_max_pause_min,
+        "cb_guard_fallback_proxy": s.cb_guard_fallback_proxy,
+        "cb_throttle_enabled": s.cb_throttle_enabled,
+        "cb_throttle_per_min": s.cb_throttle_per_min,
         "models": s.models,
         "saved_models": s.saved_models,
         "ranks": s.ranks,

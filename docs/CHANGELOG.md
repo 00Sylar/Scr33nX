@@ -10,6 +10,15 @@ grouped by date / milestone.
 
 ## [Unreleased]
 
+### Added
+- **Chaturbate protection** (**⚙ Settings → 🛡️ Chaturbate protection**). Chaturbate blocks an IP that hits its video servers too hard, and endless retries kept the block going.
+  - **Auto-pause:** when several different models are refused (403) within a short window, Scr33nX pauses Chaturbate. No new recordings start, and Player tiles show "Chaturbate paused" instead of retrying.
+  - **Resuming:** after the pause (2 minutes by default) one stream is tested. If it plays, Chaturbate resumes; if not, the next pause is twice as long, up to 30 minutes.
+  - **Fallback proxy (optional):** Chaturbate video goes through this proxy during a pause instead of stopping.
+  - **Controls:** a live status line and a **Resume now** button.
+  - **Gradual start:** Chaturbate recordings start at most N per minute (default 10), so opening the app or a burst of restarts doesn't send 40 requests at once. After a pause, recordings always come back gradually.
+  - Everything can be switched off or tuned.
+
 ---
 
 ## V2.10 — 2026-11-01

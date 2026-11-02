@@ -30,6 +30,7 @@ from urllib.parse import urlparse, parse_qs
 import audit
 import links as model_links
 import recorder
+import cb_guard
 import cb_relay
 import netproxy
 import ratelimit
@@ -734,6 +735,8 @@ class StreamRecorderApp(tk.Tk):
         self.settings = load_settings()
         netproxy.configure(self.settings.proxy_default, self.settings.proxies)
         ratelimit.configure(self.settings.dl_limit_mbps, self.settings.ul_limit_mbps)
+        cb_guard.set_hooks(probe=cb_relay.probe_chaturbate)   # events → log file
+        cb_guard.apply_settings(self.settings)
         self.recorder = StreamRecorder()
         self.recorder.output_dir     = self.settings.output_dir
         self.recorder.max_size_mb    = self.settings.max_size_mb
