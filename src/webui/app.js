@@ -213,12 +213,11 @@ function render(s) {
   setToggleBtn($("btn-monitor"), r, "▶ Start Monitor", "⏹ Stop Monitor");
   setToggleBtn($("btn-scanner"), v, "▶ Start Scanner", "⏹ Stop Scanner");
 
-  // Recorder table + dashboard only paint while the Recorder tab is showing;
-  // the tab-click handler paints them immediately on switch.
-  if (activeTab === "recorder") {
-    renderDash(s.dash);
-    renderRec(s.models);
-  }
+  // The dashboard sits in the always-visible sidebar, so it paints every tick.
+  // The Recorder table only paints while its tab is showing; the tab-click
+  // handler paints it immediately on switch.
+  renderDash(s.dash);
+  if (activeTab === "recorder") renderRec(s.models);
   renderSaved();
   patchPlayerStatuses();
   patchPreviewControls();
@@ -1512,6 +1511,7 @@ let playerTileErr = new Map();       // tileId -> short error text shown on the 
 
 const PLAYER_RETRY_MS = 30000;  // wait between attempts for a tile that failed
 const PLAYER_HIDE_PAUSE_MS = 3000;  // not-visible this long → stop loading the tile
+const PLAYER_STALE_MS = 20000;      // paused longer than this → stream URL is stale, re-resolve
 const PLAYER_START_SLOTS = 4;       // max tiles in the resolve/attach phase at once
 
 // Player tile quality cap (pixel height; 0 = Max). Mirrors the persisted
@@ -1560,7 +1560,7 @@ function releaseStartSlot() {
 // resumes at the live edge when shown. The hls instance and element stay.
 let playerTileInView = new Map();   // tileId -> last IntersectionObserver verdict
 let playerVisTimers = new Map();    // tileId -> pending "pause" timeout
-let playerVisPaused = new Set();    // tileIds paused by this mechanism
+let playerVisPaused = new Map();    // tileId -> ms timestamp it was paused by this mechanism
 let playerObserved = new Map();     // tileId -> element currently observed
 const playerIO = ("IntersectionObserver" in window)
   ? new IntersectionObserver((entries) => {
@@ -1614,14 +1614,26 @@ function pauseTileLoad(id) {
   const el = document.querySelector(`[data-tile="${id}"] .tile-video`);
   if (inst.stopLoad) { try { inst.stopLoad(); } catch (_) {} }
   if (el) el.pause();
-  playerVisPaused.add(id);
+  playerVisPaused.set(id, Date.now());
   const t = findPlayerTile(id);
   plog(`tile ${t ? t.name : id}: paused (not visible)`);
 }
 function resumeTileLoad(id) {
+  const pausedAt = playerVisPaused.get(id);
   playerVisPaused.delete(id);
   const inst = playerHls.get(id);
   if (!inst) return;
+  // After a long pause (window minimized / behind another app) the stream's
+  // playlist URLs have expired — resuming them only 404s into a fatal error
+  // and the 30 s retry cooldown. Re-resolve a fresh stream instead.
+  if (pausedAt && Date.now() - pausedAt > PLAYER_STALE_MS) {
+    const t = findPlayerTile(id);
+    plog(`tile ${t ? t.name : id}: paused too long — reloading stream`);
+    stopTilePlayback(id);
+    playerCooldownUntil.delete(id);
+    playTile(id, { silent: true });
+    return;
+  }
   const el = document.querySelector(`[data-tile="${id}"] .tile-video`);
   if (inst.startLoad) { try { inst.startLoad(-1); } catch (_) {} }   // -1 = live edge
   const t = findPlayerTile(id);
@@ -1629,6 +1641,9 @@ function resumeTileLoad(id) {
   plog(`tile ${t ? t.name : id}: resumed`);
 }
 document.addEventListener("visibilitychange", () => {
+  // Window shown again → retry failed tiles now (like re-opening the tab),
+  // rather than leaving them on "retrying…" until their cooldown runs out.
+  if (document.visibilityState === "visible") playerCooldownUntil.clear();
   for (const id of [...playerHls.keys()]) tileVisCheck(id);
 });
 
@@ -2782,10 +2797,7 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
   activeTab = t.dataset.tab;
   // Paint the newly visible tab from the latest snapshot right away (the
   // per-tick render skips hidden tabs).
-  if (activeTab === "recorder" && S) {
-    renderDash(S.dash);
-    renderRec(S.models);
-  }
+  if (activeTab === "recorder" && S) renderRec(S.models);
   if (t.dataset.tab === "settings") { loadSettings(); loadVip(); }
   if (t.dataset.tab === "output") loadPipeFields();
   if (t.dataset.tab === "saved") { savedCache.version = -1; renderSaved(); }

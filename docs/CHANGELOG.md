@@ -10,6 +10,13 @@ grouped by date / milestone.
 
 ## [Unreleased]
 
+### Fixed
+- The sidebar dashboard (LIVE count and per-site REC / ONLINE / IDLE numbers) now
+  updates live on every tab. It used to freeze until you opened the Recorder tab.
+- Player tiles recover by themselves when you come back to Scr33nX after
+  minimizing it or switching to another app. Before, they showed "playback error
+  — retrying…" until you switched tabs and back.
+
 ---
 
 ## V2.9 — 2026-10-30
