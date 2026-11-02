@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 from typing import Optional
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 import audit
@@ -205,8 +205,18 @@ STATUS_TAGS = {
 _API_PORT = 5200  # v2 (TEST) uses 5200 to coexist with v1's 5199
 
 
+class _ApiServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+
 class _ApiHandler(BaseHTTPRequestHandler):
     _app: "StreamRecorderApp" = None  # set after App() is built
+
+    # The server is threaded only so a slow GET /preview resolve can't stall
+    # the extension's /models and popup polls. Every other request still runs
+    # one at a time under this lock, as the handlers assume (e.g. an /add
+    # landing before the /rank that follows it).
+    _serial = threading.Lock()
 
     # ModelStatus → wire string, shared by /status and /models
     _STATUS_STR = {
@@ -243,6 +253,17 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if urlparse(self.path).path == "/preview":
+            self._do_get()
+            return
+        with self._serial:
+            self._do_get()
+
+    def do_POST(self):
+        with self._serial:
+            self._do_post()
+
+    def _do_get(self):
         if not self._auth_ok():
             self._json({"ok": False, "error": "unauthorized — set the API "
                         "token from Scr33nX Settings in this client"}, 401)
@@ -257,6 +278,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
             # Bulk snapshot of every Recorder + Saved model — one call for
             # clients that track many models at once (extension badges).
             self._handle_models()
+            return
+        if parsed.path == "/preview":
+            # Localhost relay URL for the extension's hover mini player.
+            self._handle_preview(parsed)
             return
         if parsed.path == "/links":
             # Identity groups + same-name suggestions (read-only snapshot).
@@ -298,6 +323,32 @@ class _ApiHandler(BaseHTTPRequestHandler):
             "aka":         aka,
             "linked_recording": linked_rec,
         })
+
+    def _handle_preview(self, parsed):
+        """GET /preview?name=&site=&quality=&any= — resolve an online/recording
+        Recorder model and return the relay URL a Player tile would use
+        (`quality` = height cap in px, 0 = Max). `any=1` also resolves models
+        the Recorder doesn't track. Web UI only: the classic app has no
+        in-page player pipeline."""
+        qs = parse_qs(parsed.query)
+        name = (qs.get("name", [""])[0] or "").strip().lower()
+        site = (qs.get("site", [""])[0] or "").strip().lower()
+        try:
+            quality = max(0, int(qs.get("quality", ["0"])[0] or 0))
+        except ValueError:
+            quality = 0
+        if not name or not site:
+            self._json({"ok": False, "error": "name and site required"}, 400)
+            return
+        resolve = getattr(self._app, "preview_resolve", None)
+        if resolve is None:
+            self._json({"ok": False, "error": "the mini player needs the "
+                        "default (web) UI"}, 501)
+            return
+        any_model = qs.get("any", ["0"])[0] == "1"
+        res = resolve(name, site, force_embedded=True, quality=quality,
+                      untracked=any_model)
+        self._json(res)
 
     def _handle_models(self):
         """GET /models — every Recorder + Saved model in one response, with the
@@ -353,7 +404,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
             m["linked_recording"] = lr
         self._json({"ok": True, "recording": recording, "models": models})
 
-    def do_POST(self):
+    def _do_post(self):
         if not self._auth_ok():
             self._json({"ok": False, "error": "unauthorized — set the API "
                         "token from Scr33nX Settings in this client"}, 401)
@@ -5077,7 +5128,7 @@ class StreamRecorderApp(tk.Tk):
     def _start_api_server(self):
         _ApiHandler._app = self
         try:
-            self._api_server = HTTPServer(("127.0.0.1", _API_PORT), _ApiHandler)
+            self._api_server = _ApiServer(("127.0.0.1", _API_PORT), _ApiHandler)
             t = threading.Thread(target=self._api_server.serve_forever,
                                  daemon=True, name="api-server")
             t.start()

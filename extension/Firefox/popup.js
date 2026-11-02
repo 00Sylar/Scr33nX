@@ -549,7 +549,49 @@ async function poll() {
   if (stateSig(appData) !== lastSig) render(appData);
 }
 
+// ── Add-on options (highlight filter + mini player) ──────────────────────────
+// Stored in extension storage; content scripts pick changes up live.
+// Keep defaults in sync with content.js OPT_DEFAULTS.
+const OPT_DEFAULTS = { highlight: [], mpEnabled: true, mpWidth: 360,
+                       mpDelay: 1000, mpMuted: true, mpQuality: 480,
+                       mpAny: false };
+
+async function initOptions() {
+  let st = {};
+  try { st = await browser.storage.local.get(Object.keys(OPT_DEFAULTS)); } catch {}
+  const o = Object.assign({}, OPT_DEFAULTS, st);
+  const save = (k, v) => {
+    try { browser.storage.local.set({ [k]: v }); } catch {}
+  };
+  const hl = [...document.querySelectorAll('#hl input')];
+  // Chip look via a class, not :has() — Firefox only has :has() from 121.
+  const saveHl = () => {
+    hl.forEach((c) => c.parentElement.classList.toggle('on', c.checked));
+    save('highlight', hl.filter((c) => c.checked).map((c) => c.value));
+  };
+  for (const cb of hl) {
+    cb.checked = (o.highlight || []).includes(cb.value);
+    cb.parentElement.classList.toggle('on', cb.checked);
+    cb.addEventListener('change', saveHl);
+  }
+  document.getElementById('hlClear').addEventListener('click', () => {
+    hl.forEach((c) => { c.checked = false; });
+    saveHl();
+  });
+  for (const id of ['mpEnabled', 'mpAny', 'mpMuted']) {
+    const el = document.getElementById(id);
+    el.checked = !!o[id];
+    el.addEventListener('change', () => save(id, el.checked));
+  }
+  for (const id of ['mpWidth', 'mpDelay', 'mpQuality']) {
+    const el = document.getElementById(id);
+    el.value = String(o[id]);
+    el.addEventListener('change', () => save(id, Number(el.value)));
+  }
+}
+
 async function init() {
+  initOptions();
   try {
     const st = await browser.storage.local.get('apiToken');
     TOKEN = (st && st.apiToken) || '';

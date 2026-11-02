@@ -180,6 +180,43 @@
     .aka-st.online    { color: #3ecf8e; }
     .aka-st.offline, .aka-st.none { color: #56565c; }
     .aka-st.checking  { color: #ffc14d; }
+
+    /* add-on options (highlight filter + mini player) */
+    .opts { border-top: 1px solid #1d1d20; padding: 10px 14px 12px; }
+    .opt-title {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 10px; color: #56565c; text-transform: uppercase;
+      letter-spacing: 1px; margin-bottom: 7px;
+    }
+    .opt-title button {
+      background: none; border: none; color: #56565c; font: inherit;
+      cursor: pointer; text-transform: none; letter-spacing: 0;
+    }
+    .opt-title button:hover { color: #ff2b3d; }
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .chip {
+      font-size: 11px; padding: 3px 7px; border-radius: 3px; cursor: pointer;
+      background: #17171a; color: #8a8a90; user-select: none;
+      border: 1px solid #272729;
+    }
+    .chip input { display: none; }
+    .chip:hover { color: #f2f2f4; }
+    .chip.on { background: #2a0c0f; color: #f2f2f4; border-color: #ff2b3d; }
+    .chip .st { color: #ffc14d; }
+    details.mp { margin-top: 10px; }
+    details.mp summary {
+      font-size: 11px; color: #8a8a90; cursor: pointer; user-select: none;
+    }
+    details.mp summary:hover { color: #f2f2f4; }
+    details.mp .auto-row { margin: 4px 0 0; padding: 4px 2px; }
+    .opt-row {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 12px; color: #8a8a90; padding: 4px 2px;
+    }
+    .opt-row select {
+      background: #17171a; color: #f2f2f4; border: 1px solid #272729;
+      border-radius: 3px; font: inherit; font-size: 11px; padding: 2px 4px;
+    }
   </style>
 </head>
 <body>
@@ -190,6 +227,50 @@
   </div>
   <div class="body" id="root">
     <div class="msg"><span class="icon">⏳</span>Loading…</div>
+  </div>
+  <div class="opts">
+    <div class="opt-title">Highlight thumbnails <button id="hlClear">clear</button></div>
+    <div class="chips" id="hl">
+      <label class="chip"><input type="checkbox" value="recording">● REC</label>
+      <label class="chip"><input type="checkbox" value="online">Online</label>
+      <label class="chip"><input type="checkbox" value="r5"><span class="st">★</span>5</label>
+      <label class="chip"><input type="checkbox" value="r4"><span class="st">★</span>4</label>
+      <label class="chip"><input type="checkbox" value="r3"><span class="st">★</span>3</label>
+      <label class="chip"><input type="checkbox" value="r2"><span class="st">★</span>2</label>
+      <label class="chip"><input type="checkbox" value="r1"><span class="st">★</span>1</label>
+      <label class="chip"><input type="checkbox" value="r0">No rank</label>
+    </div>
+    <details class="mp">
+      <summary>⚙ Mini player</summary>
+      <label class="auto-row"><input type="checkbox" id="mpEnabled"> Show on hover</label>
+      <label class="auto-row" title="Also models not in your Recorder — slower to start, and every preview is one extra lookup on the cam site"><input type="checkbox" id="mpAny"> Preview any model</label>
+      <div class="opt-row">Size
+        <select id="mpWidth">
+          <option value="280">Small</option>
+          <option value="360">Medium</option>
+          <option value="480">Large</option>
+          <option value="640">X-Large</option>
+        </select>
+      </div>
+      <div class="opt-row">Hover delay
+        <select id="mpDelay">
+          <option value="500">0.5 s</option>
+          <option value="1000">1 s</option>
+          <option value="1500">1.5 s</option>
+          <option value="2000">2 s</option>
+          <option value="3000">3 s</option>
+        </select>
+      </div>
+      <div class="opt-row">Quality
+        <select id="mpQuality">
+          <option value="360">360p</option>
+          <option value="480">480p</option>
+          <option value="720">720p</option>
+          <option value="0">Max</option>
+        </select>
+      </div>
+      <label class="auto-row"><input type="checkbox" id="mpMuted"> Start muted</label>
+    </details>
   </div>
   <script src="popup.js"></script>
 </body>

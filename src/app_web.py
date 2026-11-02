@@ -24,7 +24,6 @@ import webbrowser
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from http.server import HTTPServer
 from typing import Optional
 
 # Importing app reuses its module-level setup (rotating file log, crash
@@ -32,7 +31,7 @@ from typing import Optional
 # API behaves byte-identically. The Tk class is defined but never
 # instantiated: no window, no Tk event loop.
 import app as classic
-from app import (_ApiHandler, APP_VERSION, GITHUB_REPO, _API_PORT,
+from app import (_ApiHandler, _ApiServer, APP_VERSION, GITHUB_REPO, _API_PORT,
                  QUALITY_OPTIONS, _quality_label, _detect_browsers)
 import audit
 import links as model_links
@@ -1029,7 +1028,7 @@ class WebCore:
         return {"ok": False, "error": self._PREVIEW_SHORT}
 
     def preview_resolve(self, name: str, site: str, force_embedded: bool = False,
-                        quality: int = 0) -> dict:
+                        quality: int = 0, untracked: bool = False) -> dict:
         """Blocking (called on a js_api thread): resolve upstream, wrap in the
         relay. External mode spawns the player; embedded returns the localhost
         URL for the in-page hls.js player. force_embedded is used by the
@@ -1037,12 +1036,15 @@ class WebCore:
         general Preview mode setting (that setting only governs the
         right-click Preview action). `quality` is the Player tile's variant
         height cap in px (0 = Max); it only applies with force_embedded and
-        never touches the recording of the same model."""
+        never touches the recording of the same model. `untracked` (the
+        extension's "Preview any model") lets a model the engine doesn't poll
+        through the status gate; it is then resolved fresh."""
         key = f"{site}:{name.lower()}"
         tile_cap = max(0, int(quality or 0)) if force_embedded else None
         cfg = self.recorder.models.get(key)
         status = cfg.status if cfg else None
-        if status not in (ModelStatus.ONLINE, ModelStatus.RECORDING):
+        fresh = untracked and cfg is None
+        if not fresh and status not in (ModelStatus.ONLINE, ModelStatus.RECORDING):
             return self._preview_unavailable(
                 f"Preview: {name} ({site}) is not online "
                 f"(status={_STATUS_STR.get(status, 'offline')}) — preview only "
@@ -1054,7 +1056,9 @@ class WebCore:
             # paths may reuse a URL of that same age instead of re-resolving.
             # For Chaturbate that also skips the global 1.5 s API gate, which
             # a background room-list sweep can otherwise hold for seconds.
-            max_age = recorder_mod.PREVIEW_URL_MAX_AGE
+            # An untracked model has no such check, so it goes to the network
+            # (and through the normal Chaturbate pacing).
+            max_age = 0.0 if fresh else recorder_mod.PREVIEW_URL_MAX_AGE
             if site == "stripchat":
                 import stripchat_native
                 upstream = stripchat_native.resolve(
@@ -1311,7 +1315,7 @@ class WebCore:
     def _start_api_server(self):
         _ApiHandler._app = self
         try:
-            self._api_server = HTTPServer(("127.0.0.1", _API_PORT), _ApiHandler)
+            self._api_server = _ApiServer(("127.0.0.1", _API_PORT), _ApiHandler)
             threading.Thread(target=self._api_server.serve_forever,
                              daemon=True, name="api-server").start()
         except OSError as e:

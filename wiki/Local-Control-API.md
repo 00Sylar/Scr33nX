@@ -18,6 +18,7 @@ While Scr33nX is running it serves a small HTTP API on
 |---|---|---|
 | `GET /status` | `?name=&site=` | model state: `in_recorder`, `in_saved`, `status`, `auto`, `rank` |
 | `GET /models` | — | bulk snapshot: every Recorder + Saved model with the same per‑model fields as `/status`, plus per‑model `aka`/`linked_recording` and a global `recording` count — one call for clients tracking many models (the extension badges use it) |
+| `GET /preview` | `?name=&site=&quality=&any=` | live relay URL for an online/recording Recorder model (`quality` = height cap in px, 0 = Max; `any=1` also resolves models the Recorder doesn't track, fresh from the site) — what the extension's hover mini player plays. Web UI only |
 | `GET /links` | — | identity groups (`links`) + same‑username‑on‑another‑site `suggestions` |
 | `POST /link` | `{a:{name,site}, b:{name,site}}` | mark two tracked models as the same person — ranks sync across the group (highest wins); `/status` & `/models` report the aliases |
 | `POST /unlink` | `{name, site}` | remove one model from its identity group |

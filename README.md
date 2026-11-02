@@ -115,10 +115,12 @@ The extension adds models to Scr33nX with one click while you're on their page, 
 
 It also shows live status without opening the popup:
 - **Dynamic toolbar badge** — on a model's page the icon shows **REC** (red, recording), **amber REC** (a linked account of this model is recording on another site), **ON** (green, online in your Recorder), **OFF** (grey, in Recorder but idle) or **★** (blue, in Saved Models). On every other tab it shows the **number of active recordings**. The popup lists the model's linked accounts with their live state and warns before you start a duplicate recording.
-- **Listing badges** — on Chaturbate / Stripchat / Camsoda / MFC browse pages, thumbnails of tracked models get a small corner badge (pulsing **REC** / **ON** / **OFF** / **★**), so you can see who's already being recorded while scrolling.
+- **Listing badges** — on Chaturbate / Stripchat / Camsoda / MFC browse pages, thumbnails of tracked models get a corner badge (a large glowing **● REC**, **ON** / **OFF**, or the model's **★ star rank** for Saved Models), so you can see who's already being recorded — and how you ranked them — while scrolling.
+- **Highlight filter** — in the add-on popup, pick one or more of **● REC / Online / ★5 / ★4 / ★3 / ★2 / ★1 / No rank**; on browse pages every thumbnail that matches none of them goes dark (still visible, back to full brightness on hover), so the ones you care about stand out. Ranks match exactly. **clear** turns it off.
+- **Hover mini player** — rest the mouse on the thumbnail of a model that's online or recording in your Recorder and a small live player opens next to it (click it to toggle sound); it closes when you move away or scroll. Turn on **Preview any model** to also preview Saved-only and untracked models (slower to start, and each preview is one extra lookup on the cam site). Popup → **⚙ Mini player** sets on/off, preview any model, size, hover delay (0.5–3 s), quality and start-muted. Needs the default (web) UI.
 - **Right-click add** — right-click any model link/thumbnail → **Add to Scr33nX Recorder** or **Add to Scr33nX Saved Models**, without opening the model's page.
 
-> **Firefox note:** MV3 host permissions are opt-in — after loading the add-on, open `about:addons` → Scr33nX → **Permissions** and grant access to the cam sites, or the listing badges won't appear.
+> **Firefox note:** MV3 host permissions are opt-in — after loading the add-on, open `about:addons` → Scr33nX → **Permissions** and grant access to the cam sites, or the listing badges won't appear. Also grant `127.0.0.1` there for the hover mini player.
 
 **Chromium browsers (Chrome / Brave / Opera / Edge):**
 1. Open `chrome://extensions` (or `brave://extensions`, `opera://extensions`, `edge://extensions`)
@@ -244,6 +246,7 @@ While Scr33nX is running it serves a small HTTP API on `http://127.0.0.1:5200`, 
 |---|---|---|
 | `GET /status` | `?name=&site=` | model state: `in_recorder`, `in_saved`, `status`, `auto`, `rank` |
 | `GET /models` | — | bulk snapshot: every Recorder + Saved model with the same per-model fields as `/status`, plus per-model `aka`/`linked_recording` and a global `recording` count — one call for clients tracking many models (the extension badges use it) |
+| `GET /preview` | `?name=&site=&quality=&any=` | live relay URL for an online/recording Recorder model (`quality` = height cap in px, 0 = Max; `any=1` also resolves models the Recorder doesn't track, fresh from the site) — what the extension's hover mini player plays. Web UI only |
 | `GET /links` | — | identity groups (`links`) + same-username-on-another-site `suggestions` |
 | `POST /link` | `{a:{name,site}, b:{name,site}}` | mark two tracked models as the same person — ranks sync across the group (highest wins), `/status` & `/models` report the aliases |
 | `POST /unlink` | `{name, site}` | remove one model from its identity group |

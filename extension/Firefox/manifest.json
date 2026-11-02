@@ -13,6 +13,7 @@
   ],
   "host_permissions": [
     "http://localhost:5200/*",
+    "http://127.0.0.1/*",
     "*://*.chaturbate.com/*",
     "*://*.stripchat.com/*",
     "*://*.camsoda.com/*",
@@ -31,6 +32,17 @@
       ],
       "js": ["content.js"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["player.html"],
+      "matches": [
+        "*://*.chaturbate.com/*",
+        "*://*.stripchat.com/*",
+        "*://*.camsoda.com/*",
+        "*://*.myfreecams.com/*"
+      ]
     }
   ],
   "icons": {

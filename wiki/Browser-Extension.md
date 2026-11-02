@@ -74,13 +74,40 @@ you to the normal popup with nothing started.
 ## Listing badges (browse pages)
 
 On Chaturbate / Stripchat / Camsoda / MyFreeCams **browse/listing pages**,
-thumbnails of models you already track get a small corner badge: a pulsing red
-**REC**, green **ON**, grey **OFF**, or blue **★** — same meanings as the
-toolbar badge. You can tell at a glance who is already being recorded without
-opening their room. Hover a badged card for the model's name and state. Badges
+thumbnails of models you already track get a corner badge: a large, white-bordered,
+glowing red **● REC** (amber if a linked account is recording), green **ON**, or
+grey **OFF**. Saved Models show their **star rank** instead (e.g. ★★★☆☆, gold
+for the rank, dimmed for the rest). You can tell at a glance who is already
+being recorded — and how you rated them — without opening their room. Hover a badged card for the model's name and state. Badges
 refresh every ~10 s (and as new cards load while you scroll); untracked models
 get no badge. Everything is fed by **one** cached `/models` call, so a page
 with 100 thumbnails costs the same as one status check.
+
+## Highlight filter
+
+In the popup, under **Highlight thumbnails**, pick one or more of **● REC**,
+**Online**, **★5**, **★4**, **★3**, **★2**, **★1** or **No rank**. On the browse
+pages, every thumbnail that matches none of your picks goes dark — still
+visible, and it lights back up while you hover it. Ranks match exactly (★3 =
+only 3‑star models); pick several to combine them. Untracked models never
+match. **clear** switches the filter off. The change applies to open tabs
+immediately.
+
+## Hover mini player
+
+Rest the mouse on the thumbnail of a model that is **online or recording in
+your Recorder** and, after the hover delay, a small live player opens next to
+the card — the same stream a Player tile uses. Click it to toggle sound. It
+closes when the pointer leaves both the card and the player, or when you
+scroll. Only one is open at a time, and nothing connects until the delay has
+passed. Turn on **Preview any model** to also preview models that are only
+in Saved Models or not tracked at all — their stream is looked up when you
+hover, so the player takes a few seconds longer, and each preview is one extra
+request to the cam site (off by default). Settings live in the popup under
+**⚙ Mini player**: on/off, preview any model, size
+(Small–X‑Large), hover delay (0.5–3 s), quality (360p–Max, default 480p) and
+start muted. It needs the default (web) UI. Firefox: also grant
+the `127.0.0.1` permission in `about:addons`.
 
 ## Right‑click add
 
