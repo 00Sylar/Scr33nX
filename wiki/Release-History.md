@@ -6,6 +6,19 @@ in the repository, and each version is also a
 
 ---
 
+## V2.10 — 2026‑11‑01
+
+**Live dashboard & self‑healing Player.**
+
+**Fixed**
+- The sidebar dashboard (LIVE count and per‑site REC / ONLINE / IDLE numbers)
+  now updates live on every tab, not only on the Recorder tab.
+- Player tiles recover by themselves after you minimize Scr33nX or switch to
+  another app. Before, they sat on "playback error — retrying…" until you
+  switched tabs and back.
+
+---
+
 ## V2.9 — 2026‑10‑30
 
 **Speed limits & a lighter Player.**
