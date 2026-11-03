@@ -333,7 +333,7 @@ _stats_lock = threading.Lock()
 
 def _stats_reset() -> dict:
     return {"ok": 0, "fail": {}, "fetch": [], "queue": [], "blocked": 0,
-            "miss_ok": 0, "miss_fail": 0,
+            "miss_ok": 0, "miss_fail": 0, "init_hit": 0, "init_get": 0,
             "busy": 0, "busy_max": 0, "t0": time.monotonic()}
 
 
@@ -360,13 +360,14 @@ def _report_stats():
     logger.info(
         "relay %.0fs: %d segments ok, %d failed%s · fetch p95 %.1fs max %.1fs"
         " · queue wait p95 %.1fs max %.1fs · workers busy max %d/%d"
-        " · ffmpeg waited >2s ×%d · cache misses %d ok / %d failed",
+        " · ffmpeg waited >2s ×%d · cache misses %d ok / %d failed"
+        " · init %d cached / %d fetched",
         time.monotonic() - st["t0"], st["ok"], fails,
         f" ({why})" if why else "",
         _pct(st["fetch"], 0.95), max(st["fetch"], default=0.0),
         _pct(st["queue"], 0.95), max(st["queue"], default=0.0),
         st["busy_max"], _PREFETCH_WORKERS, st["blocked"],
-        st["miss_ok"], st["miss_fail"])
+        st["miss_ok"], st["miss_fail"], st["init_hit"], st["init_get"])
 
 
 class _Deadline(Exception):
@@ -488,9 +489,35 @@ def _prefetch_one(url: str, mode: str, entry: _Entry, rec: bool = True):
                 _cache.pop(url, None)
 
 
+# ── Init-segment cache ────────────────────────────────────────────────────────
+# ffmpeg's HLS demuxer re-downloads the fMP4 init section (#EXT-X-MAP) after
+# EVERY playlist reload — it rebuilds its init-section list on each reload, so
+# the pointer never matches (measured with ffmpeg 8.1: 8 reloads → 8 init
+# fetches). With dozens of recordings that was ~one extra upstream request per
+# segment (~47/s at 64 streams), each a round trip ffmpeg waited on. The init
+# for a given URL never changes, so the relay keeps one copy and serves repeats
+# locally.
+_INIT_TTL = 600.0                      # s: forget an init URL not listed lately
+_init_lock = threading.Lock()
+_init_urls: dict[str, float] = {}      # upstream init URL → last seen in a playlist
+_init_cache: dict[str, tuple] = {}     # upstream init URL → (ts, status, ctype, data)
+
+
+def _note_init_urls(text: str, base_url: str):
+    now = time.monotonic()
+    for line in text.splitlines():
+        if line.startswith("#EXT-X-MAP"):
+            m = re.search(r'URI="([^"]+)"', line)
+            if m:
+                with _init_lock:
+                    _init_urls[urllib.parse.urljoin(base_url, m.group(1))] = now
+
+
 def _track_media_playlist(text: str, base_url: str, mode: str, key: str):
     """Scan a media playlist: prefetch every segment not yet handled, detect
     segments that expired before we could fetch them, and prune the cache."""
+    if "#EXT-X-MAP" in text:
+        _note_init_urls(text, base_url)
     segs, durs = [], []
     last_dur = 0.0
     for line in text.splitlines():
@@ -621,6 +648,11 @@ def _janitor_loop():
             for u, t in list(_fetched.items()):
                 if now - t > _FETCHED_TTL:
                     _fetched.pop(u, None)
+        with _init_lock:
+            for u, t in list(_init_urls.items()):
+                if now - t > _INIT_TTL:
+                    _init_urls.pop(u, None)
+                    _init_cache.pop(u, None)
 
 
 # doppiocdn (Stripchat) rejects segment requests without a matching Referer.
@@ -827,6 +859,17 @@ class _Handler(BaseHTTPRequestHandler):
 
         is_playlist = parsed.path.endswith(".m3u8")
         if not is_playlist:
+            with _init_lock:
+                is_init = target in _init_urls
+                hit = _init_cache.get(target) if is_init else None
+            if hit is not None:
+                with _stats_lock:
+                    _stats["init_hit"] += 1
+                self._send(hit[1], hit[2], hit[3])
+                return
+            if is_init:
+                self._serve_init(target, mode)
+                return
             # Segment: usually already prefetched (or in flight) — serve from
             # cache so ffmpeg never waits on the upstream CDN.
             with _state_lock:
@@ -916,6 +959,24 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         except (ConnectionError, OSError):
             pass  # ffmpeg dropped the connection; nothing to do
+
+    def _serve_init(self, target: str, mode: str):
+        """First request for an init section: fetch it whole, keep a copy."""
+        try:
+            r = _fetch(target, mode, tries=2, timeout=(5, 10))
+        except requests.RequestException:
+            self.send_error(502)
+            return
+        data = r.content
+        _count(len(data))
+        ctype = r.headers.get("Content-Type", "application/octet-stream")
+        with _stats_lock:
+            _stats["init_get"] += 1
+        if 200 <= r.status_code < 300:
+            with _init_lock:
+                _init_cache[target] = (time.monotonic(), r.status_code, ctype,
+                                       data)
+        self._send(r.status_code, ctype, data)
 
     def _proxy_stream(self, target: str, mode: str):
         """Cache miss: forward the segment, streaming chunks to ffmpeg as they

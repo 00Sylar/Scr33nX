@@ -10,6 +10,15 @@ grouped by date / milestone.
 
 ## [Unreleased]
 
+### Added
+- **Average speed next to the meters.** The ↓ and ↑ meters now show a small red **avg** — the average over the last minute. The big number keeps jumping because every recording downloads its video in short bursts; the average is the steady figure.
+
+### Changed
+- **Drop warning light: click for details.** Clicking the **⚠ LOST** light now opens a panel that stays open (and keeps updating) until you click elsewhere or press Esc. The old hover tooltip vanished after a second, too fast to read.
+
+### Fixed
+- **Half the requests to the video servers.** ffmpeg downloaded each stream's small "init" file again after every playlist refresh — about one extra request per video piece (~47 a second with 64 recordings), each one a wait for the recording. Scr33nX now keeps one copy and answers those itself, so Chaturbate and Stripchat see far fewer requests.
+
 ---
 
 ## V2.11 — 2026-11-03

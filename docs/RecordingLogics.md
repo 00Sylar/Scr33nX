@@ -127,6 +127,19 @@ workers busy max 41/64 · ffmpeg waited >2s ×4`. Read it as:
   **body-timeout** → it stopped sending mid-segment.
 - **cache misses** → ffmpeg asked for a segment prefetch didn't have (or had
   failed) and the relay fetched it on the spot; failures there are jumps.
+- **init N cached / M fetched** → the init-segment cache below.
+
+**Init-segment cache.** ffmpeg's HLS demuxer re-downloads the fMP4 init
+section (`#EXT-X-MAP`) after **every** playlist reload: it rebuilds its
+init-section list on each reload, so the "same init as before" pointer check
+never matches. Measured with ffmpeg 8.1 against a fake live fMP4 stream:
+8 reloads → 8 init fetches. In production (V2.11, 64 recordings) that showed
+up as ~2,800 "cache misses" a minute — about one extra upstream request per
+segment. `_note_init_urls` records every `EXT-X-MAP` URI the relay rewrites;
+the first request for one is fetched whole (`_serve_init`) and kept in
+`_init_cache`, repeats are served locally. Entries are dropped once the URL
+hasn't been listed for `_INIT_TTL` (600 s). Same test through the relay:
+8 reloads → 1 upstream init fetch.
 - **ffmpeg waited >2s** → ffmpeg sat on an in-flight segment (and stopped
   polling its playlist meanwhile).
 
@@ -135,7 +148,8 @@ Tile prefetches count toward ok/failed/fetch time but not queue/busy (own pool).
 **Header drop light.** `StreamRecorder.drop_status()` sums the losses of the
 last 120 s for streams that are still recording (a model going offline also
 loses its last live-edge segments) and the web UI shows a small pill left of
-the ↓ meter only while it's non-empty: amber for isolated drops, red when
+the ↓ meter only while it's non-empty (click → a details panel that stays
+open and updates live; a `title` tooltip vanished on every 1 s re-render): amber for isolated drops, red when
 ≥ 10 % of active recordings (at least 3) dropped, or ≥ 60 s was lost. The gap
 callback runs on the relay thread serving ffmpeg's playlist, so the event list
 has its own lock (`_gap_lock`), never the recorder's main lock.

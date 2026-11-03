@@ -198,23 +198,39 @@ async function tick() {
 
 /* Header "check engine" light: only shown while recordings are losing
    segments (video jumps). Amber = isolated drops, red = several streams or
-   a lot of time lost in the last 2 minutes. */
+   a lot of time lost in the last 2 minutes. Click it for a details panel that
+   stays open (and updates live) until you click elsewhere or press Esc. */
+let dropPopHtml = "";
 function renderDropLight(d) {
-  const el = $("drop-light");
-  if (!d) { el.hidden = true; return; }
+  const el = $("drop-light"), pop = $("drop-pop");
+  if (!d) { el.hidden = true; pop.hidden = true; return; }
   el.hidden = false;
   el.classList.toggle("red", d.level === "red");
   setTxtId("drop-txt", `${d.lost}s LOST`);
-  const who = d.top.map(([lbl, sec]) => `  ${lbl}  ~${Math.round(sec)}s`).join("\n");
+  if (pop.hidden) return;
+  const rows = d.top.map(([lbl, sec]) =>
+    `<div class="dp-row"><span>${esc(lbl)}</span><b>~${Math.round(sec)}s</b></div>`).join("");
   const hint = d.wide
-    ? "Several streams at once: the connection or the site can't keep up.\n" +
-      "Stop a few recordings or lower Max quality."
-    : "Isolated drops: usually the site's server briefly refusing or stalling.\n" +
-      "If it keeps happening for one model, lower that model's quality.";
-  const tip = "Segment drops in the last 2 min — video jumps\n" +
-    `${d.streams} stream(s), ~${d.lost}s lost, last ${d.ago}s ago\n${who}\n\n${hint}`;
-  if (el.title !== tip) el.title = tip;
+    ? "Several recordings dropped at once: the connection or the site can't keep up. Stop a few recordings or lower Max quality."
+    : "Isolated drops: usually the site's server briefly refusing or stalling. If it keeps happening for one model, lower that model's quality.";
+  const html = `<div class="dp-title">Video jumps — last 2 minutes</div>` +
+    `<div class="dp-sum">${d.streams} recording(s) · ~${d.lost}s lost · last ${d.ago}s ago</div>` +
+    rows + `<div class="dp-hint">${hint}</div>`;
+  if (html !== dropPopHtml) { dropPopHtml = html; pop.innerHTML = html; }
 }
+$("drop-light").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const pop = $("drop-pop");
+  pop.hidden = !pop.hidden;
+  dropPopHtml = "";
+  if (!pop.hidden && S) renderDropLight(S.drops);
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".drop-wrap")) $("drop-pop").hidden = true;
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") $("drop-pop").hidden = true;
+});
 
 /* ══ top-level render ══ */
 function render(s) {
@@ -225,6 +241,8 @@ function render(s) {
   renderDropLight(s.drops);
   setTxtId("m-down", s.meters.down.toFixed(1));
   setTxtId("m-up", s.meters.up.toFixed(1));
+  setTxtId("m-down-avg", `avg ${s.meters.down_avg ?? 0}`);
+  setTxtId("m-up-avg", `avg ${s.meters.up_avg ?? 0}`);
 
   const r = s.monitoring.recorder, v = s.monitoring.saved;
   setTxtId("hdr-status", r && v ? "MONITORING (R+S)" : r ? "RECORDER ACTIVE"

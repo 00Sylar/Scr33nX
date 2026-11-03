@@ -43,13 +43,15 @@ See [[Recording Internals|Recording-Internals]] for how all of this works.
 - **Version number** in the header next to the logo, plus a background
   **update check** against GitHub (see [[Installation]]).
 - **Live bandwidth meter** in the header (`↓` download / `↑` Telegram upload) —
-  your signal for when you're approaching your connection's limit.
+  your signal for when you're approaching your connection's limit. The small
+  red **avg** is the last minute's average (the live number swings because
+  recordings download in bursts).
 - **Log file** — everything (Activity Log, ffmpeg stderr, relay warnings, crash
   tracebacks) is also written to `%LOCALAPPDATA%\Scr33nX\streamrecorder.log`
   (rotating, 5 MB × 3) — shared by both interfaces.
 - **Drop warning light** — a small **⚠ Ns LOST** light left of the ↓ meter,
   shown only while recordings are losing video (jumps) in the last 2 minutes:
-  amber for a few drops, red when many recordings drop at once. Hover it for
+  amber for a few drops, red when many recordings drop at once. Click it for
   which models and what to do (default UI).
 - **Dropped‑segment warnings** — get notified when a stream is losing segments
   because bandwidth can't keep up (toggle in [[Settings]]). A model simply

@@ -229,6 +229,8 @@ class WebCore:
         self._update_latest = ""
         self._bw_mbps = 0.0
         self._ul_mbps = 0.0
+        self._bw_avg = 0.0     # 60 s rolling averages for the header meters
+        self._ul_avg = 0.0
 
         self._tasks: queue.Queue = queue.Queue()
         threading.Thread(target=self._task_loop, daemon=True,
@@ -1417,8 +1419,11 @@ class WebCore:
 
     # ── Background loops ──────────────────────────────────────────────────────
 
+    _METER_AVG_WINDOW = 60.0
+
     def _meter_loop(self):
         bw_prev = ul_prev = None
+        hist: list = []   # (t, down_total, up_total) over the last minute
         while True:
             try:
                 total = cb_relay.bytes_downloaded()
@@ -1440,6 +1445,17 @@ class WebCore:
                 if cur <= 500.0:
                     self._ul_mbps = 0.6 * self._ul_mbps + 0.4 * cur
             ul_prev = (now, ul_total)
+            # The 1 s meters swing a lot: each recording downloads a whole
+            # ~2 s segment in one burst, so a second catches more or fewer
+            # bursts. The minute average is the steady figure.
+            hist.append((now, total, ul_total))
+            while hist and now - hist[0][0] > self._METER_AVG_WINDOW:
+                hist.pop(0)
+            if len(hist) >= 2:
+                t0, d0, u0 = hist[0]
+                dt = max(now - t0, 0.001)
+                self._bw_avg = max(0.0, (total - d0) * 8 / dt / 1_000_000)
+                self._ul_avg = max(0.0, (ul_total - u0) * 8 / dt / 1_000_000)
             time.sleep(1.0)
 
     def _size_loop(self):
@@ -1574,7 +1590,9 @@ class WebCore:
             "monitoring": {"recorder": self._monitoring_recorder,
                            "saved": self._monitoring_saved},
             "meters": {"down": round(self._bw_mbps, 1) if self._bw_mbps >= 0.05 else 0.0,
-                       "up": round(self._ul_mbps, 1) if self._ul_mbps >= 0.05 else 0.0},
+                       "up": round(self._ul_mbps, 1) if self._ul_mbps >= 0.05 else 0.0,
+                       "down_avg": round(self._bw_avg),
+                       "up_avg": round(self._ul_avg)},
             "dash": self._api_dashboard(),
             "models": models,
             "saved_count": len(self._saved_data),
