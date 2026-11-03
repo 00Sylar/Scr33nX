@@ -26,6 +26,11 @@
   traffic through a SOCKS5/HTTP proxy such as Cloudflare WARP in proxy mode.
   One default proxy or one per site, with a **Test** button. See [[Settings]]
   → 🌐 Proxy.
+- **Chaturbate protection** — when Chaturbate starts refusing several models,
+  Scr33nX pauses Chaturbate instead of retrying (which kept the block going),
+  tests one stream after the pause and resumes; recordings start gradually.
+  Optional fallback proxy while paused. See [[Settings]] → 🛡️ Chaturbate
+  protection.
 
 See [[Recording Internals|Recording-Internals]] for how all of this works.
 
@@ -42,6 +47,10 @@ See [[Recording Internals|Recording-Internals]] for how all of this works.
 - **Log file** — everything (Activity Log, ffmpeg stderr, relay warnings, crash
   tracebacks) is also written to `%LOCALAPPDATA%\Scr33nX\streamrecorder.log`
   (rotating, 5 MB × 3) — shared by both interfaces.
+- **Drop warning light** — a small **⚠ Ns LOST** light left of the ↓ meter,
+  shown only while recordings are losing video (jumps) in the last 2 minutes:
+  amber for a few drops, red when many recordings drop at once. Hover it for
+  which models and what to do (default UI).
 - **Dropped‑segment warnings** — get notified when a stream is losing segments
   because bandwidth can't keep up (toggle in [[Settings]]). A model simply
   going offline no longer triggers a false warning.
