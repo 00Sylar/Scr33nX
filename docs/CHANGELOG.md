@@ -10,6 +10,10 @@ grouped by date / milestone.
 
 ## [Unreleased]
 
+---
+
+## V2.11 — 2026-11-03
+
 ### Added
 - **Extension: mini player controls.** Move the mouse onto the hover mini player for a control bar: **● REC / ■ STOP** (adds the model to the Recorder first if needed), **AUTO**, **＋ Recorder**, **☆ Saved**, and the model's star rank in the bottom bar (click to set). Small size shows icons only.
 - **Extension: hover mini player.** Rest the mouse on the thumbnail of a model that's online or recording in your Recorder and a small live player opens next to it (click to toggle sound). Turn on **Preview any model** to also preview models that aren't in your Recorder (slower to start; off by default). Set it up in the add-on popup under **⚙ Mini player**: on/off, preview any model, size, hover delay (0.5–3 s), quality and start muted. Needs the default (web) UI. Firefox users: also grant the `127.0.0.1` permission in `about:addons`.

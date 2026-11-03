@@ -6,6 +6,41 @@ in the repository, and each version is also a
 
 ---
 
+## V2.11 — 2026‑11‑03
+
+**Chaturbate protection, fewer video jumps & a hover mini player.**
+
+**Added**
+- **Chaturbate protection** (⚙ Settings → 🛡️ Chaturbate protection) — when
+  Chaturbate starts refusing several models, Scr33nX pauses Chaturbate instead
+  of retrying (which kept the block going), tests one stream after the pause
+  and resumes; optional fallback proxy while paused; recordings start
+  gradually (default 10 per minute).
+- **Drop warning light** — a small **⚠ Ns LOST** light left of the ↓ meter,
+  shown only while recordings are losing video (jumps). Amber = a few drops,
+  red = many recordings at once. Hover for which models and what to do.
+- **Extension: hover mini player** — rest the mouse on a thumbnail of a model
+  in your Recorder for a small live player, with a control bar (REC/STOP,
+  AUTO, + Recorder, Saved, star rank). Set up under ⚙ Mini player.
+- **Extension: highlight filter** — darken every thumbnail except the ones you
+  pick (REC, Online, a star rank, No rank).
+- **Relay health line in the log** — once a minute, how many video pieces
+  downloaded, how many failed and why.
+
+**Changed**
+- Extension: bigger, pulsing REC badge; Saved Models show their star rank on
+  thumbnails.
+
+**Fixed**
+- **Chaturbate: fewer video jumps.** Chaturbate's servers don't all accept the
+  same connection type (IPv4/IPv6) at the same time; Scr33nX kept switching
+  back and forth and asked for about every other video piece twice. Each
+  server now keeps its own choice.
+- A stuck download can no longer hold a recording up for a minute (15‑second
+  budget per video piece; a download that breaks off is retried at once).
+
+---
+
 ## V2.10 — 2026‑11‑01
 
 **Live dashboard & self‑healing Player.**
