@@ -11,6 +11,7 @@ grouped by date / milestone.
 ## [Unreleased]
 
 ### Added
+- **Extension: mini player controls.** Move the mouse onto the hover mini player for a control bar: **● REC / ■ STOP** (adds the model to the Recorder first if needed), **AUTO**, **＋ Recorder**, **☆ Saved**, and the model's star rank in the bottom bar (click to set). Small size shows icons only.
 - **Extension: hover mini player.** Rest the mouse on the thumbnail of a model that's online or recording in your Recorder and a small live player opens next to it (click to toggle sound). Turn on **Preview any model** to also preview models that aren't in your Recorder (slower to start; off by default). Set it up in the add-on popup under **⚙ Mini player**: on/off, preview any model, size, hover delay (0.5–3 s), quality and start muted. Needs the default (web) UI. Firefox users: also grant the `127.0.0.1` permission in `about:addons`.
 - **Extension: highlight filter.** In the add-on popup, pick any mix of **● REC**, **Online**, **★5–★1** and **No rank** — every other thumbnail on the browse pages goes dark, so the ones you picked stand out.
 - **API: `GET /preview`** returns the live stream link for an online/recording Recorder model (used by the mini player).
@@ -22,9 +23,16 @@ grouped by date / milestone.
   - **Gradual start:** Chaturbate recordings start at most N per minute (default 10), so opening the app or a burst of restarts doesn't send 40 requests at once. After a pause, recordings always come back gradually.
   - Everything can be switched off or tuned.
 
+- **Drop warning light.** A small **⚠ Ns LOST** light now appears left of the ↓ speed meter, but only while recordings are losing pieces of video (the jumps) in the last 2 minutes. Amber means a few isolated drops; red means many recordings are dropping at once, so the connection or the site can't keep up. Hover it to see which models and what to do (stop a few recordings or lower Max quality).
+- **Relay health line in the log.** Once a minute the log shows how many video pieces downloaded fine, how many failed and why (refused, missing, timed out), and how busy the downloader was, to make the cause of video jumps easy to find.
+
 ### Changed
 - **Extension: easier-to-see thumbnail badges.** On cam-site browse pages the **REC** badge is now bigger, white-bordered and pulses with a glow instead of fading, so it stands out on any thumbnail. ON/OFF badges are a bit larger too.
 - **Extension: star rank on thumbnails.** Saved Models no longer show a plain blue ★ — their badge now shows the model's rank (e.g. ★★★☆☆), so you can see how you rated someone right from the listing.
+
+### Fixed
+- **Chaturbate: fewer dropped segments (video jumps).** Chaturbate's video servers don't all accept the same connection type (IPv4 vs IPv6) at the same time. Scr33nX kept one shared choice for all of them, so it kept switching back and forth, and about every other video piece was asked for twice. That slowed downloads enough that recordings lost pieces. Each server now keeps its own choice, so pieces download in one try and fewer refusals go to Chaturbate.
+- **A stuck download can no longer hold up a recording for a minute.** Each video piece now gets a 15-second download budget; a server that sends it too slowly is cut off, instead of tying up a downloader (and the recording waiting on it) for up to 60 seconds. A download that breaks off halfway is retried right away.
 
 ---
 

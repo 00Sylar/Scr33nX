@@ -1582,6 +1582,7 @@ class WebCore:
             "saved_status": saved_status,
             "active_recordings": self._active_recording_count(),
             "low_disk": self.recorder.low_disk_blocked() is not None,
+            "drops": self.recorder.drop_status(),
             "privacy": self.settings.privacy_mode_enabled,
             "log": log_new, "log_seq": self._log_seq,
             "pipe": {"running": pipe_running, "state": self._pipe_state,

@@ -100,12 +100,45 @@ validated at ~50 concurrent recordings:
 | Knob | Value | Why |
 |---|---|---|
 | `_PREFETCH_WORKERS` | 64 | ~N/2 downloads/s for N≈50 streams with headroom |
-| prefetch fetch budget | 2 tries, 5 s connect / 10 s read | a live segment only exists ~10–20 s; fail fast, next playlist refresh retries |
+| prefetch fetch budget | 2 attempts sharing a **15 s wall clock** (`_SEG_DEADLINE`); each attempt's timeouts are capped to what's left (≤ 5 s connect / 10 s read) | a live segment only exists ~10–20 s; fail fast, next playlist refresh retries. Only a connect error or a body that breaks off mid-read (CB's mid-segment TLS resets) is retried; a 403/404/5xx answer is final. The body is read with urllib3 `read1` so the deadline is checked as bytes arrive (`iter_content` blocks until a full chunk). `_cb_edge_get` can spend the timeouts once per IP family, so the hard bound is ~2× the budget. Before: per-chunk read timeout only, so a trickling edge held a worker (and the ffmpeg waiting on it) for up to ~60 s |
 | `_CACHE_MAX_BYTES` | 768 MB | 300 MB silently disabled prefetching at high N; at the cap, served segments are evicted first (prefetch is no longer switched off) and a warning logs |
 | `_SERVED_RETAIN` | 8 s (only while tiles are open) | lets a tile and ffmpeg share one segment download |
 | `_TILE_PREFETCH_WORKERS` | 6 | tiles never take workers from the 64 recording workers |
 | HTTP pool | 32 hosts / 128 connections | workers must never block on a free connection |
 | `request_queue_size` | 128 | listen-backlog default of 5 refused bursts of ffmpeg connections (ffmpeg "Error number -138") |
+
+**Prefetch is driven by ffmpeg's playlist polls.** The relay only learns of
+new segments when ffmpeg asks for the media playlist, and ffmpeg's HLS demuxer
+stops asking while it's blocked on a slow segment. Segments that appear and
+expire between two polls are never seen, so the logged `segment(s) lost`
+totals are a **lower bound**.
+
+**Relay health line.** Once a minute (`_report_stats`, from the janitor) the
+relay logs e.g. `relay 60s: 1830 segments ok, 12 failed (403×8, timeout×3,
+deadline×1) · fetch p95 1.2s max 9.8s · queue wait p95 0.0s max 3.1s ·
+workers busy max 41/64 · ffmpeg waited >2s ×4`. Read it as:
+
+- **403 / 404 / 5xx** dominate → the site refused or lost the segment; nothing
+  local fixes it (retrying harder only sends more refused requests).
+- **queue wait** > ~1 s or **workers busy** at 64/64 → the pool is saturated
+  (more workers, or fewer streams).
+- **timeout / deadline / high fetch p95** → slow edges or the line is full.
+- **body-reset** → the edge cut the connection mid-segment (retried once);
+  **body-timeout** → it stopped sending mid-segment.
+- **cache misses** → ffmpeg asked for a segment prefetch didn't have (or had
+  failed) and the relay fetched it on the spot; failures there are jumps.
+- **ffmpeg waited >2s** → ffmpeg sat on an in-flight segment (and stopped
+  polling its playlist meanwhile).
+
+Tile prefetches count toward ok/failed/fetch time but not queue/busy (own pool).
+
+**Header drop light.** `StreamRecorder.drop_status()` sums the losses of the
+last 120 s for streams that are still recording (a model going offline also
+loses its last live-edge segments) and the web UI shows a small pill left of
+the ↓ meter only while it's non-empty: amber for isolated drops, red when
+≥ 10 % of active recordings (at least 3) dropped, or ≥ 60 s was lost. The gap
+callback runs on the relay thread serving ffmpeg's playlist, so the event list
+has its own lock (`_gap_lock`), never the recorder's main lock.
 
 ### How wrapping works
 
@@ -157,11 +190,22 @@ the edge flipped.
 
 So nothing is pinned any more. `cb_relay._cb_edge_get` (used for every
 `mode="chaturbate"` upstream GET via `_get`, including the streaming
-cache-miss path) tries the preferred family first (`_cb_order`, IPv6 by
-default), and on a **403** or a **connection error** (no route for that
-family) retries on the other. A **2xx** from a non-preferred family promotes
-it to the front (logged once: `Chaturbate edges now reached over IPv6 (the
-other family was refused)`), so the cost of a flip is one extra request, once.
+cache-miss path) tries the family preferred **for that edge host** first
+(`_cb_pref`, keyed by netloc; a new host starts with the last family that
+worked anywhere, IPv6 at startup), and on a **403** or a **connection error**
+(no route for that family) retries on the other. A **2xx** from a
+non-preferred family promotes it for that host (logged: `Chaturbate edge
+edgeN-xxx.live.mmcdn.com now reached over IPv6 (the other family was
+refused)`), so the cost of a flip is one extra request per host, once.
+
+The preference used to be **one global order**. On 2026-11-03 the log showed
+~15,000 flip lines in 13 h, several per second: different edges (edge1-atl,
+edge23-atl, …) were gating *different* families at the same time, so the
+global head ping-ponged and roughly every other segment fetch paid a wasted
+403 round trip first (slower downloads → lost segments, plus extra 403s
+logged against our IP). Per-host preference removes the ping-pong. If the
+log still shows the same host flipping repeatedly, the gate is per request
+rather than per edge, and this needs revisiting.
 404/5xx are returned as is (the edge accepted the family). Both families
 403 → the last 403 is returned (a genuinely spent token; the master cache
 below still handles it).
@@ -598,7 +642,7 @@ cached video state so the recorder can show `PRIVATE` without a second round-tri
 | Symptom | Likely cause | Where to look |
 |---|---|---|
 | CB statuses stop updating / `[CB] throttled` in the log | Cloudflare rate-limit; the pacer is backing off (statuses are kept, not flipped OFFLINE) | `_cb_get` / `_CB_BASE_INTERVAL`; raise the base spacing if it recurs |
-| CB resolves ("url ok") but every playlist 403s / `manifestLoadError` | Edge refusing the IP family in use (it has flipped before); the relay should auto-switch | §1 "Chaturbate edges are gated by IP family"; `cb_relay._cb_edge_get`; look for the `Chaturbate edges now reached over …` log line. If both families 403, the cause is something else (headers/token) — probe with `requests` over each family |
+| CB resolves ("url ok") but every playlist 403s / `manifestLoadError` | Edge refusing the IP family in use (it has flipped before); the relay should auto-switch | §1 "Chaturbate edges are gated by IP family"; `cb_relay._cb_edge_get`; look for the `Chaturbate edge … now reached over …` log line. If both families 403, the cause is something else (headers/token) — probe with `requests` over each family |
 | CB resolves but every playlist 403s on **both** IP families, and the browser shows slow JPEG instead of video | The edge refuses your whole network (not the family) | §1 "…can also refuse a whole network"; set a proxy for Chaturbate in Settings → Proxy (e.g. WARP proxy mode `socks5h://127.0.0.1:40000`) and press **Test** |
 | Stripchat won't record, no browser opens | MOUFLON keys rotated; should fall back | `stripchat_native.resolve` returns None → check Playwright |
 | Stripchat records but bandwidth meter ignores it | On Playwright fallback (expected — bypasses relay) | `launch_stripchat_playwright` |
@@ -616,7 +660,9 @@ cached video state so the recorder can show `PRIVATE` without a second round-tri
 
 ## 5. Bandwidth budget
 
-Each 1080p stream needs roughly **5–6 Mbps sustained**. If many simultaneous
+Each 1080p stream needs roughly **5–6 Mbps sustained** (measured 2026-11-03:
+42 live Chaturbate recordings averaged 5.65 Mbps each, 237 Mbps total, so
+~64 CB recordings come close to a 400 Mbps line). If many simultaneous
 recordings drop segments (watch for ⚠ warnings), the total internet connection
 is the bottleneck. Remedies, in order: set a global **Max Quality** cap
 (720p roughly halves usage vs. unlimited), enable **⬇ Auto-Downgrade** so only

@@ -711,6 +711,11 @@ class StreamRecorder:
         # (bandwidth saturated). Always logged; notification is opt-out.
         self.gap_warnings_enabled: bool = True
         self._gap_warn_ts: dict[str, float] = {}
+        # (ts, label, seconds) for the header drop light. Own lock: the gap
+        # callback runs on the relay thread serving ffmpeg's playlist, which
+        # must never wait behind the recorder's main lock.
+        self._gap_events: list = []
+        self._gap_lock = threading.Lock()
 
         # Low-disk guard: when enabled, every recording is stopped and new ones
         # are refused while the output drive is below low_disk_stop_gb; it
@@ -762,6 +767,11 @@ class StreamRecorder:
 
     def _on_relay_gap(self, label: str, missed: int, seconds: float):
         """Relay callback (prefetch thread): segments expired unfetched."""
+        now = time.time()
+        with self._gap_lock:
+            self._gap_events = [e for e in self._gap_events
+                                if now - e[0] < self._DROP_WINDOW]
+            self._gap_events.append((now, label, seconds))
         self._log(f"⚠ {label}: {missed} segment(s) (~{seconds:.0f}s) lost — "
                   f"download can't keep up with the live stream")
         self._maybe_downgrade(label, seconds)
@@ -837,6 +847,44 @@ class StreamRecorder:
         label = f"{cfg.site}:{cfg.name}"
         self._session_q.pop(label, None)
         self._gap_window.pop(label, None)
+
+    # Header drop light: losses in the last _DROP_WINDOW seconds, counted only
+    # for streams that are still recording (a model going offline loses its
+    # last live-edge segments too — that isn't a bandwidth problem).
+    _DROP_WINDOW = 120
+
+    def drop_status(self) -> dict | None:
+        """Recent segment losses for the header warning light, or None."""
+        now = time.time()
+        with self._gap_lock:
+            events = [e for e in self._gap_events
+                      if now - e[0] < self._DROP_WINDOW]
+        per: dict[str, float] = {}
+        last = 0.0
+        for ts, label, secs in events:
+            cfg = self.models.get(label)
+            if not cfg or not cfg.session:
+                continue
+            per[label] = per.get(label, 0.0) + secs
+            last = max(last, ts)
+        if not per:
+            return None
+        lost = sum(per.values())
+        sites = {lbl.split(":", 1)[0] for lbl in per}
+        active = sum(1 for c in list(self.models.values()) if c.session)
+        # red: a real share of the recordings dropping at once (≥ 10 %, at
+        # least 3), or a lot of time lost — the connection or the site can't
+        # keep up; amber: isolated drops
+        wide = len(per) >= max(3, active * 0.1)
+        return {
+            "level": "red" if wide or lost >= 60 else "amber",
+            "wide": wide,
+            "streams": len(per),
+            "lost": round(lost),
+            "ago": round(now - last),
+            "sites": sorted(sites),
+            "top": sorted(per.items(), key=lambda kv: -kv[1])[:5],
+        }
 
     def _maybe_downgrade(self, label: str, seconds: float):
         """Accumulate segment losses; if a stream persistently can't keep up,

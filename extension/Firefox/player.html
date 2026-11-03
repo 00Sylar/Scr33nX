@@ -15,17 +15,83 @@
     }
     #msg[hidden] { display: none; }
     #bar {
-      position: absolute; left: 0; right: 0; bottom: 0; display: flex;
+      position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 8px;
       justify-content: space-between; align-items: center; padding: 5px 8px;
       background: linear-gradient(transparent, rgba(0,0,0,.8));
     }
-    #name { font-weight: 700; }
+    #name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Control bar — shown while the pointer is over the player */
+    #ctl {
+      position: absolute; top: 0; left: 0; right: 0; display: flex; gap: 4px;
+      padding: 6px; background: linear-gradient(rgba(0,0,0,.85), transparent);
+      opacity: 0; transition: opacity .15s;
+    }
+    body:hover #ctl { opacity: 1; }
+    #ctl button {
+      font: bold 11px/1 'Segoe UI', Arial, sans-serif; color: #f2f2f4;
+      background: rgba(23,23,26,.92); border: 1px solid #3a3a3e; border-radius: 4px;
+      padding: 5px 7px; cursor: pointer; white-space: nowrap;
+    }
+    #ctl button:hover:not(:disabled) { border-color: #f2f2f4; }
+    #ctl button:disabled { opacity: .4; cursor: default; }
+    #ctl button[hidden] { display: none; }
+    #rec          { background: #e53935 !important; border-color: #e53935 !important; }
+    #rec.stop     { background: #17171a !important; color: #ff5252; }
+    #auto.on      { background: #2e7d32 !important; border-color: #3ecf8e !important; }
+    #saved.on     { color: #ffc14d; }
+    /* Small size: icons only (the title tooltip names each button) */
+    @media (max-width: 300px) { #ctl .lbl { display: none; } #ctl button { padding: 5px 8px; } }
+
+    #stars { font-size: 14px; letter-spacing: 1px; white-space: nowrap; }
+    #stars span { color: rgba(255,255,255,.3); }
+    #stars span.on { color: #ffc14d; }
+    #stars:not(.off) span:hover { color: #fff; }
+    #stars.off { opacity: .45; cursor: default; }
+
+    #toast {
+      position: absolute; top: 40px; left: 50%; transform: translateX(-50%);
+      background: rgba(16,36,26,.95); color: #3ecf8e; border-radius: 3px;
+      padding: 4px 9px; font-size: 11px; white-space: nowrap; pointer-events: none;
+    }
+    #toast.err { background: rgba(42,12,15,.95); color: #ff5252; }
+    #toast[hidden] { display: none; }
+
+    #confirm {
+      position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px;
+      align-items: center; justify-content: center; text-align: center; padding: 12px;
+      background: rgba(0,0,0,.85); color: #ffa726; line-height: 1.5; cursor: default;
+    }
+    #confirm[hidden] { display: none; }
+    #confirm b { color: #f2f2f4; }
+    #confirm div { display: flex; gap: 6px; }
+    #confirm button {
+      font: bold 11px 'Segoe UI', Arial, sans-serif; border: none; border-radius: 4px;
+      padding: 5px 12px; cursor: pointer;
+    }
+    #cfYes { background: #e53935; color: #fff; }
+    #cfNo  { background: #17171a; color: #8a8a90; }
   </style>
 </head>
 <body>
   <video id="v" autoplay playsinline muted></video>
   <div id="msg">Connecting…</div>
-  <div id="bar"><span id="name"></span><span id="snd" title="Click to toggle sound">🔇</span></div>
+  <div id="ctl">
+    <button id="rec" disabled><span class="ic">●</span><span class="lbl"> REC</span></button>
+    <button id="auto" disabled><span class="ic">A</span><span class="lbl">UTO</span></button>
+    <button id="add" disabled title="Add to Recorder"><span class="ic">＋</span><span class="lbl"> Recorder</span></button>
+    <button id="saved" disabled title="Add to Saved Models"><span class="ic">☆</span><span class="lbl"> Saved</span></button>
+  </div>
+  <div id="toast" hidden></div>
+  <div id="confirm" hidden>
+    <span id="cfText"></span>
+    <div><button id="cfYes">Record anyway</button><button id="cfNo">Cancel</button></div>
+  </div>
+  <div id="bar">
+    <span id="name"></span>
+    <span id="stars" class="off"><span>★</span><span>★</span><span>★</span><span>★</span><span>★</span></span>
+    <span id="snd" title="Click to toggle sound">🔇</span>
+  </div>
   <script src="vendor/hls.min.js"></script>
   <script src="player.js"></script>
 </body>

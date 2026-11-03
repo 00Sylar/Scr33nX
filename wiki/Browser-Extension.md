@@ -109,6 +109,21 @@ request to the cam site (off by default). Settings live in the popup under
 start muted. It needs the default (web) UI. Firefox: also grant
 the `127.0.0.1` permission in `about:addons`.
 
+**Controls.** Move the mouse onto the player and a control bar appears on top:
+
+- **● REC / ■ STOP** — start or stop recording. If the model isn't in your
+  Recorder yet, REC adds them first. If a linked account of the same model is
+  already recording elsewhere, it asks **Record anyway?** first.
+- **AUTO** — turn Auto-Record on/off (dimmed until the model is in the Recorder).
+- **＋ Recorder** — add without recording (hidden once they're in the Recorder).
+- **☆ Saved** — add to Saved Models (turns into a gold ★ once saved).
+- **★★★★★** in the bottom bar — click a star to set the rank, the current one
+  to clear it (needs the model in Recorder or Saved).
+
+On the Small size the buttons show icons only — hover one for its name. The
+bar follows the app live (every ~2 s), and removing a model is deliberately
+left to the popup and the app.
+
 ## Right‑click add
 
 Right‑click any model link or thumbnail on the cam sites →

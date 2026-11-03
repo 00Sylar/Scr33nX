@@ -196,12 +196,33 @@ async function tick() {
   fetching = false;
 }
 
+/* Header "check engine" light: only shown while recordings are losing
+   segments (video jumps). Amber = isolated drops, red = several streams or
+   a lot of time lost in the last 2 minutes. */
+function renderDropLight(d) {
+  const el = $("drop-light");
+  if (!d) { el.hidden = true; return; }
+  el.hidden = false;
+  el.classList.toggle("red", d.level === "red");
+  setTxtId("drop-txt", `${d.lost}s LOST`);
+  const who = d.top.map(([lbl, sec]) => `  ${lbl}  ~${Math.round(sec)}s`).join("\n");
+  const hint = d.wide
+    ? "Several streams at once: the connection or the site can't keep up.\n" +
+      "Stop a few recordings or lower Max quality."
+    : "Isolated drops: usually the site's server briefly refusing or stalling.\n" +
+      "If it keeps happening for one model, lower that model's quality.";
+  const tip = "Segment drops in the last 2 min — video jumps\n" +
+    `${d.streams} stream(s), ~${d.lost}s lost, last ${d.ago}s ago\n${who}\n\n${hint}`;
+  if (el.title !== tip) el.title = tip;
+}
+
 /* ══ top-level render ══ */
 function render(s) {
   setTxtId("ver", "v" + s.version);
   const up = $("update-pill");
   if (s.update) { up.hidden = false; setTxtId("update-pill", `● Update available (${s.update})`); }
   $("lowdisk-pill").hidden = !s.low_disk;
+  renderDropLight(s.drops);
   setTxtId("m-down", s.meters.down.toFixed(1));
   setTxtId("m-up", s.meters.up.toFixed(1));
 

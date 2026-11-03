@@ -57,6 +57,17 @@ input::placeholder { color: var(--text-3); }
 }
 .update-pill:hover { background: rgba(255, 178, 36, 0.16); }
 .header .spacer, .toolbar .spacer { flex: 1; }
+.drop-light {
+  font-family: var(--font-mono); font-size: var(--fs-0); color: var(--warn);
+  display: flex; align-items: center; gap: 5px; cursor: help; white-space: nowrap;
+  background: rgba(255, 178, 36, 0.08);
+  border: 1px solid rgba(255, 178, 36, 0.3);
+  border-radius: var(--r-full); padding: 3px 10px;
+}
+.drop-light b { font-weight: 600; }
+.drop-light.red { color: var(--red-bright); background: rgba(255, 60, 60, 0.1);
+  border-color: rgba(255, 60, 60, 0.35); }
+.drop-light[hidden] { display: none; }
 .meter {
   font-family: var(--font-mono); font-size: var(--fs-0);
   color: var(--text-2); display: flex; align-items: center; gap: 6px;

@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
+import urllib3
 
 import cb_guard
 import netproxy
@@ -74,7 +75,11 @@ class _FamilyAdapter(requests.adapters.HTTPAdapter):
 # 403 from the wrong family doesn't spend the token. So rather than pin a
 # family, CB edge requests try the preferred one, fall back to the other on a
 # 403 or a connection failure, and make whichever answered 2xx the preferred
-# one (see _cb_edge_get). Other sites use the default dual-stack session.
+# one (see _cb_edge_get). The preference is kept per edge host: edges flip at
+# different times, so at any moment some accept only IPv6 and others only
+# IPv4 — one global preference ping-ponged on every request (a wasted 403
+# round trip each time, slowing segment downloads). Other sites use the
+# default dual-stack session.
 _cb_sessions: dict[str, requests.Session] = {}
 for _fam, _src in (("v6", "::"), ("v4", "0.0.0.0")):
     _s = requests.Session()
@@ -83,26 +88,36 @@ for _fam, _src in (("v6", "::"), ("v4", "0.0.0.0")):
     _s.mount("http://", _a)
     _cb_sessions[_fam] = _s
 del _fam, _src, _s, _a
-_cb_order = ["v6", "v4"]   # preference order; head is tried first
+_cb_pref: dict[str, str] = {}   # edge host → family tried first
+_cb_last = "v6"                 # last family that worked anywhere (seeds new hosts)
 _cb_order_lock = threading.Lock()
 
 
-def _cb_prefer(fam: str):
-    """Make `fam` the first family tried for Chaturbate edge requests."""
+def _cb_order_for(host: str) -> list:
     with _cb_order_lock:
-        if _cb_order[0] == fam:
+        first = _cb_pref.get(host, _cb_last)
+    return [first, "v4" if first == "v6" else "v6"]
+
+
+def _cb_prefer(host: str, fam: str):
+    """Make `fam` the first family tried for Chaturbate edge `host`."""
+    global _cb_last
+    with _cb_order_lock:
+        _cb_last = fam
+        prev = _cb_pref.get(host)
+        if prev == fam:
             return
-        _cb_order.remove(fam)
-        _cb_order.insert(0, fam)
-    logger.info("Chaturbate edges now reached over %s (the other family was "
-                "refused)", "IPv6" if fam == "v6" else "IPv4")
+        _cb_pref[host] = fam
+    if prev is not None:
+        logger.info("Chaturbate edge %s now reached over %s (the other family "
+                    "was refused)", host, "IPv6" if fam == "v6" else "IPv4")
 
 
 def _cb_edge_get(url: str, headers: dict, timeout, stream: bool = False
                  ) -> requests.Response:
     """GET a Chaturbate edge URL over whichever IP family the edge accepts.
 
-    Tries the preferred family; a 403 (the edge refusing that family) or a
+    Tries the family preferred for this edge host; a 403 (the edge refusing that family) or a
     connection error (no route for it) moves on to the other. A 2xx from a
     non-preferred family promotes it. Any other status — 404, 5xx — means the
     edge accepted the family, so it's returned as is. If every family 403s
@@ -112,8 +127,8 @@ def _cb_edge_get(url: str, headers: dict, timeout, stream: bool = False
     nothing else succeeded, the exception is re-raised rather than reported
     as the other family's 403 — that 403 is just the refused family, and
     raising lets the caller's retry loop try the preferred family again."""
-    with _cb_order_lock:
-        order = list(_cb_order)
+    host = urllib.parse.urlparse(url).netloc
+    order = _cb_order_for(host)
     last_resp, last_exc, pref_exc = None, None, None
     for fam in order:
         try:
@@ -126,12 +141,17 @@ def _cb_edge_get(url: str, headers: dict, timeout, stream: bool = False
             continue
         if r.status_code != 403:
             if 200 <= r.status_code < 300:
-                _cb_prefer(fam)
+                _cb_prefer(host, fam)
             if last_resp is not None:
                 last_resp.close()
             return r
         if last_resp is not None:
             last_resp.close()
+        if stream:
+            try:
+                r.content   # tiny body: read it so the connection is reused
+            except requests.RequestException:
+                pass
         last_resp = r
     if pref_exc is not None:
         if last_resp is not None:
@@ -220,6 +240,13 @@ def bytes_downloaded() -> int:
 _PREFETCH_WORKERS = 64
 _CACHE_MAX_BYTES = 768 * 1024 * 1024   # hard cap; beyond it, fall back to miss path
 _ENTRY_TTL = 90.0                      # s: drop fetched segments never requested
+# Wall-clock budget for one segment download (both attempts). The read
+# timeout is per chunk, so a trickling edge could otherwise hold a worker (and
+# the ffmpeg waiting on it) for up to ~60 s. Each attempt's timeouts are capped
+# to the remaining budget, but _cb_edge_get may spend them once per IP family,
+# so the hard bound is ~2× this. A failed segment is retried on the next
+# playlist refresh while it's still listed.
+_SEG_DEADLINE = 15.0
 _FETCHED_TTL = 600.0                   # s: how long to remember served URLs
 _JANITOR_EVERY = 2.0                   # s: cache sweep cadence
 
@@ -296,28 +323,140 @@ class _Entry:
         self.served = 0.0   # monotonic ts of the first serve (0 = not yet)
 
 
-def _prefetch_one(url: str, mode: str, entry: _Entry):
+# ── Relay health stats ────────────────────────────────────────────────────────
+# Summarised in the log once a minute (_report_stats) so segment losses can be
+# traced to a cause: refusals (403), missing segments (404), server errors,
+# slow/timed-out downloads, or the worker pool being saturated (queue wait).
+_STATS_EVERY = 60.0
+_stats_lock = threading.Lock()
+
+
+def _stats_reset() -> dict:
+    return {"ok": 0, "fail": {}, "fetch": [], "queue": [], "blocked": 0,
+            "miss_ok": 0, "miss_fail": 0,
+            "busy": 0, "busy_max": 0, "t0": time.monotonic()}
+
+
+_stats = _stats_reset()
+
+
+def _pct(vals: list, q: float) -> float:
+    if not vals:
+        return 0.0
+    v = sorted(vals)
+    return v[min(len(v) - 1, int(len(v) * q))]
+
+
+def _report_stats():
+    global _stats
+    with _stats_lock:
+        st, _stats = _stats, _stats_reset()
+        _stats["busy"] = st["busy"]   # in-flight jobs carry over
+    fails = sum(st["fail"].values())
+    if not st["ok"] and not fails:
+        return
+    why = ", ".join(f"{k}×{n}" for k, n in sorted(st["fail"].items(),
+                                                  key=lambda kv: -kv[1]))
+    logger.info(
+        "relay %.0fs: %d segments ok, %d failed%s · fetch p95 %.1fs max %.1fs"
+        " · queue wait p95 %.1fs max %.1fs · workers busy max %d/%d"
+        " · ffmpeg waited >2s ×%d · cache misses %d ok / %d failed",
+        time.monotonic() - st["t0"], st["ok"], fails,
+        f" ({why})" if why else "",
+        _pct(st["fetch"], 0.95), max(st["fetch"], default=0.0),
+        _pct(st["queue"], 0.95), max(st["queue"], default=0.0),
+        st["busy_max"], _PREFETCH_WORKERS, st["blocked"],
+        st["miss_ok"], st["miss_fail"])
+
+
+class _Deadline(Exception):
+    pass
+
+
+def _read_body(r, deadline: float, limited: bool) -> bytearray:
+    """Read a streamed segment body, checking the deadline as data arrives.
+    read1 returns whatever has arrived (iter_content blocks until a full
+    chunk), so a trickling edge can't sit inside one read past the deadline."""
+    read1 = getattr(r.raw, "read1", None)   # urllib3 ≥ 2
+    chunks = (iter(lambda: read1(262144, decode_content=True), b"") if read1
+              else r.iter_content(65536))
+    buf = bytearray()
+    for chunk in chunks:
+        if limited:
+            ratelimit.DOWNLOAD.consume(len(chunk))
+        buf += chunk
+        if time.monotonic() > deadline:
+            raise _Deadline
+    return buf
+
+
+class _Failed(Exception):
+    def __init__(self, kind: str):
+        super().__init__(kind)
+        self.kind = kind
+
+
+def _prefetch_one(url: str, mode: str, entry: _Entry, rec: bool = True):
     global _cache_bytes
+    t_start = time.monotonic()
+    if rec:
+        with _stats_lock:
+            _stats["queue"].append(t_start - entry.ts)
+            _stats["busy"] += 1
+            _stats["busy_max"] = max(_stats["busy_max"], _stats["busy"])
+    fail = None
     try:
         # Tight budget: a live segment only exists for ~10-20 s, and a worker
         # stuck on one stalled download starves every other stream. Better to
         # fail fast and let the next playlist refresh retry.
         limited = ratelimit.DOWNLOAD.active
-        r = _fetch(url, mode, tries=2, timeout=(5, 10), stream=limited)
-        if limited:
-            # Download speed limit: read in chunks so the cap paces the actual
-            # transfer (not just the long-run average after whole segments).
-            buf = bytearray()
+        deadline = t_start + _SEG_DEADLINE
+        r, buf = None, bytearray()
+        for _ in range(2):
+            # Each attempt gets what's left of the budget as its timeouts
+            # (_cb_edge_get may spend them once per IP family). A status
+            # answer — 403/404/5xx — is final; only a connect error or a
+            # body that breaks off mid-read (CB edges reset TLS mid-segment)
+            # is retried.
+            rem = deadline - time.monotonic()
+            if rem < 1.0:
+                fail = fail or "deadline"
+                break
+            fail = None
             try:
-                for chunk in r.iter_content(65536):
-                    ratelimit.DOWNLOAD.consume(len(chunk))
-                    buf += chunk
+                r = _get(url, mode, (min(5.0, rem), min(10.0, rem)), stream=True)
+            except requests.Timeout:
+                fail = "timeout"
+                continue
+            except requests.RequestException:
+                fail = "conn"
+                continue
+            if not 200 <= r.status_code < 300:
+                r.close()
+                break
+            # Read in chunks: the download speed limit (when on) paces the
+            # actual transfer, and the deadline can cut a trickling download.
+            try:
+                buf = _read_body(r, deadline, limited)
+                break
+            except _Deadline:
+                fail = "deadline"
+                break
+            except (requests.RequestException, urllib3.exceptions.HTTPError,
+                    OSError) as exc:
+                fail = "body-timeout" if "timed out" in str(exc).lower() \
+                    else "body-reset"
             finally:
                 r.close()
-            entry.data = bytes(buf)
-        else:
-            entry.data = r.content
+        if fail:
+            raise _Failed(fail)
+        if r is None:
+            raise _Failed("other")
+        entry.data = bytes(buf)
         entry.status = r.status_code
+        if not 200 <= r.status_code < 300:
+            fail = str(r.status_code) if r.status_code in (403, 404) else \
+                ("5xx" if r.status_code >= 500 else f"http{r.status_code}")
         entry.ctype = r.headers.get("Content-Type", "application/octet-stream")
         _count(len(entry.data))
         if 200 <= r.status_code < 300:
@@ -327,9 +466,19 @@ def _prefetch_one(url: str, mode: str, entry: _Entry):
                     _cache_bytes += len(entry.data)
         else:
             entry.error = True
+    except _Failed as exc:
+        entry.error, fail = True, exc.kind
     except Exception:
-        entry.error = True
+        entry.error, fail = True, "other"
     finally:
+        with _stats_lock:
+            if rec:
+                _stats["busy"] -= 1
+            if fail:
+                _stats["fail"][fail] = _stats["fail"].get(fail, 0) + 1
+            else:
+                _stats["ok"] += 1
+                _stats["fetch"].append(time.monotonic() - t_start)
         entry.ts = time.monotonic()
         entry.event.set()
         if entry.error:
@@ -441,7 +590,7 @@ def _track_tile_playlist(segs: list, mode: str):
                     _cache[u] = e
                     submit.append((u, e))
     for u, e in submit:
-        _tile_executor.submit(_prefetch_one, u, mode, e)
+        _tile_executor.submit(_prefetch_one, u, mode, e, False)
 
 
 def _janitor_loop():
@@ -450,9 +599,16 @@ def _janitor_loop():
     under the state lock on every refresh, and once all recordings stopped
     (no more refreshes) the full cache stayed in RAM indefinitely."""
     global _cache_bytes
+    last_report = time.monotonic()
     while True:
         time.sleep(_JANITOR_EVERY)
         now = time.monotonic()
+        if now - last_report >= _STATS_EVERY:
+            last_report = now
+            try:
+                _report_stats()
+            except Exception:
+                pass
         with _state_lock:
             for u, e in list(_cache.items()):
                 if not e.event.is_set():
@@ -676,7 +832,12 @@ class _Handler(BaseHTTPRequestHandler):
             with _state_lock:
                 entry = _cache.get(target)
             if entry is not None:
-                entry.event.wait(timeout=30)
+                if not entry.event.is_set():
+                    t_wait = time.monotonic()
+                    entry.event.wait(timeout=30)
+                    if time.monotonic() - t_wait > 2.0:
+                        with _stats_lock:
+                            _stats["blocked"] += 1
                 if entry.event.is_set() and not entry.error:
                     global _cache_bytes
                     with _state_lock:
@@ -762,8 +923,11 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             r = _get(target, mode, 20, stream=True)
         except requests.RequestException:
+            with _stats_lock:
+                _stats["miss_fail"] += 1
             self.send_error(502)
             return
+        ok = False
         try:
             clen = r.headers.get("Content-Length")
             self.send_response(r.status_code)
@@ -780,12 +944,15 @@ class _Handler(BaseHTTPRequestHandler):
                 _count(len(chunk))
                 self.wfile.write(chunk)
             if 200 <= r.status_code < 300:
+                ok = True
                 with _state_lock:
                     _fetched[target] = time.monotonic()
         except (ConnectionError, OSError, requests.RequestException):
             self.close_connection = True
         finally:
             r.close()
+            with _stats_lock:
+                _stats["miss_ok" if ok else "miss_fail"] += 1
 
 
 def wrap(url: str, user_agent: str | None = None,
