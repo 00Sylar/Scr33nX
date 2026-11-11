@@ -1,5 +1,7 @@
 # Scr33nX
 
+> **Final release — V3.0 (November 2026).** This is the last public version; no further updates are planned. Scr33nX was made for **educational purposes** (learning how HLS recording, local relays and desktop UIs work) and still works as of this release. Sites change without notice, so it may stop working in the future. Use it only where you have the right to record, and respect each site's terms and the law.
+
 A lightweight Windows desktop app for automatically recording live streams from **Chaturbate**, **Stripchat**, **Camsoda**, and **MyFreeCams** — at the **highest available quality** by default, with optional global and per-model quality caps for heavy multi-model sessions.
 
 Recordings are pulled through a local smart relay that prefetches HLS segments in parallel, so dozens of simultaneous recordings stay smooth instead of dropping segments when bandwidth gets tight.
@@ -22,7 +24,7 @@ Recordings are pulled through a local smart relay that prefetches HLS segments i
 
 ### Monitoring & UI
 - ✅ Modern black & red UI — a native window (Windows WebView2, no browser involved) with smooth animations, shadows, drag-rectangle multi-select, and collapsible per-site groups. The previous Tk interface is still available (see *Two interfaces* below)
-- ✅ **Version number** shown in the header next to the logo (`v2.2`) so you always know which build you're running
+- ✅ **Version number** shown in the header next to the logo (e.g. `v3.0`) so you always know which build you're running
 - ✅ **Update check** — Scr33nX quietly asks GitHub for the latest release (on startup, then re-checks every 24 h while running); if a newer one exists, a clickable `● Update available` indicator appears in the header and opens the releases page. Runs in the background and fails silently when offline
 - ✅ **Live bandwidth meter** in the header (`↓ X.X Mbps` download / `↑` Telegram upload) showing Scr33nX's total traffic — your indicator for when you're approaching your internet connection's limit
 - ✅ **Beta log file** — everything (Activity Log, ffmpeg stderr, relay warnings, crash tracebacks) is also written to `%LOCALAPPDATA%\Scr33nX\streamrecorder.log` (rotating, 5 MB × 3)

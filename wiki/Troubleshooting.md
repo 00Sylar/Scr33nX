@@ -23,6 +23,7 @@
 | Stripchat won't record | If **Browser Fallback** is off and the native path fails, the stream is skipped by design. Enable the fallback in [[Settings]] (needs `playwright install chromium`). |
 | Bandwidth meter shows nothing for a Stripchat recording | The Playwright browser fallback doesn't pass through the relay, so it isn't counted. That's expected. |
 | `.ts` won't play | Use VLC/MPV, or convert: `ffmpeg -i input.ts -c copy output.mp4`. |
+| A site stopped resolving after a site update (nothing else changed) | Scr33nX is a finished project (V3.0, no further updates). Cam sites change their players and APIs without notice, so a resolver can eventually break for good. Check `streamrecorder.log` first — if it's your network (e.g. 403s), see the Chaturbate row above and [[Settings]] → 🌐 Proxy; otherwise the source is open to fork and fix. |
 
 ## Extension
 

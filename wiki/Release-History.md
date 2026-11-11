@@ -6,6 +6,30 @@ in the repository, and each version is also a
 
 ---
 
+## V3.0 — 2026‑11‑10
+
+**The final release.** Scr33nX is feature‑complete and no further updates are
+planned. It was built purely for educational purposes and still works as of this
+release (November 2026). Sites change without notice, so a future site update may
+eventually break a resolver; the source stays available to study or fork.
+
+**Added**
+- **Average speed next to the meters** — the ↓ and ↑ meters show a small red
+  **avg**, the average over the last minute (the live number swings because
+  recordings download in bursts).
+
+**Changed**
+- **Drop warning light: click for details** — the **⚠ LOST** light now opens a
+  panel that stays open until you click elsewhere or press Esc (the old hover
+  tooltip vanished too fast to read).
+
+**Fixed**
+- **Half the requests to the video servers** — ffmpeg re‑downloaded each stream's
+  small "init" file after every playlist refresh; Scr33nX now keeps one copy and
+  answers those itself, so Chaturbate and Stripchat see far fewer requests.
+
+---
+
 ## V2.11 — 2026‑11‑03
 
 **Chaturbate protection, fewer video jumps & a hover mini player.**

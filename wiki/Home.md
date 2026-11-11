@@ -9,6 +9,12 @@ Recordings are pulled through a local smart relay that prefetches HLS segments i
 parallel, so dozens of simultaneous recordings stay smooth instead of dropping
 segments when bandwidth gets tight.
 
+> **Final release — V3.0 (November 2026).** This is the last public version of
+> Scr33nX; no further updates are planned. It was made for **educational
+> purposes** and still works as of this release, but sites change without notice
+> and it may stop working in the future. Use it only where you have the right to
+> record, and respect each site's terms and the law.
+
 ---
 
 ## Start here

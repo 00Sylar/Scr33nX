@@ -10,6 +10,17 @@ grouped by date / milestone.
 
 ## [Unreleased]
 
+---
+
+## V3.0 — 2026-11-10
+
+**The final release.** Scr33nX is now feature-complete and **no further updates
+are planned**. It was built purely for educational purposes — to explore how HLS
+live-stream recording, local relays and desktop UIs fit together — and it still
+works as of this release (November 2026). Sites change without notice, so a future
+site update may eventually break a resolver; the source stays here for anyone who
+wants to study or fork it.
+
 ### Added
 - **Average speed next to the meters.** The ↓ and ↑ meters now show a small red **avg** — the average over the last minute. The big number keeps jumping because every recording downloads its video in short bursts; the average is the steady figure.
 
